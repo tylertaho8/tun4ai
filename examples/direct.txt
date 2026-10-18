@@ -1,0 +1,29 @@
+# Direct list: these addresses bypass the tunnel and leave through your network card.
+# 直连名单：这里的地址不进隧道，从本机网卡直接出去。
+#
+# One entry per line: an IP, a network, or a domain suffix. "#" starts a comment.
+# 一行一个：IP、网段或域名后缀。# 开头是注释。
+#
+# - A domain covers its subdomains: example.com also matches git.example.com.
+#   Domains here are resolved by your LAN DNS.
+#   域名包含子域名，用局域网 DNS 解析。
+# - With the firewall on, only TCP and ICMP pass to these addresses; UDP is dropped.
+#   防火墙开着时，这些地址只放行 TCP 和 ICMP，UDP 丢掉。
+# - A public address here exposes your real IP to that site.
+#   写公网地址，对方会看到你的真实出口 IP。
+# - The proxy server itself is excluded automatically.
+#   代理服务器地址会自动排除，不用写。
+#
+# Restart the tunnel after editing. 改完重启隧道。
+
+# company.example.com
+
+10.0.0.0/8
+172.16.0.0/12
+192.168.0.0/16
+169.254.0.0/16
+224.0.0.251/32
+239.255.255.250/32
+fc00::/7
+fe80::/10
+ff02::fb

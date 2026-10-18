@@ -1,0 +1,21 @@
+[package]
+name = "tun4ai"
+version = "0.1.0"
+edition = "2021"
+description = "Menu bar switch for a system-wide TUN tunnel with a kill switch on macOS"
+license = "MIT"
+repository = "https://github.com/tylertaho8/tun4ai"
+publish = false
+
+[dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSEvent"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSDate", "NSRunLoop", "NSString"] }
+tray-icon = "0.21"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

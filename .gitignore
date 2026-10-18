@@ -1,0 +1,4 @@
+build/
+tray/target/
+__pycache__/
+.DS_Store
