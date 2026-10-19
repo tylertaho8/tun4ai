@@ -105,8 +105,25 @@ class DnsRedirect(unittest.TestCase):
         self.assertNotIn("<proxy4>", text)
         self.assertNotIn(OTHER, text)
 
+    def test_direct_ranges_pass_every_protocol(self):
+        # AirDrop and Bonjour need UDP 5353 to ff02::fb / 224.0.0.251 on awdl0 and the LAN.
+        direct = DIRECT + [ipaddress.ip_network(n) for n in ("224.0.0.251/32", "fe80::/10", "ff02::fb/128")]
+        text = render.pf_text("en0", direct, LAN, PROXY, 443)
+        rules = lines(text)
+        for rule in (
+            "pass out quick inet to <direct4> keep state",
+            "pass in quick inet from <direct4> to any keep state",
+            "pass out quick inet6 to <direct6> keep state",
+            "pass in quick inet6 from <direct6> to any keep state",
+        ):
+            self.assertIn(rule, rules)
+            self.assertLess(text.index("block drop out quick proto udp to any port 53"), text.index(rule))
+            self.assertLess(text.index("to any port { 3478, 5349, 19302 }"), text.index(rule))
+            self.assertLess(text.index(rule), text.index("block drop out quick all"))
+
     def test_pfctl_accepts_both_rule_sets(self):
-        for sample in (render.pf_text("en0", DIRECT, LAN, PROXY, 8443), render.pf_dns_text("en1", OTHER)):
+        direct = DIRECT + [ipaddress.ip_network("fe80::/10")]
+        for sample in (render.pf_text("en0", direct, LAN, PROXY, 8443), render.pf_dns_text("en1", OTHER)):
             run = pfctl_check(sample)
             if run.returncode != 0 and "password" in run.stderr:
                 self.skipTest("pfctl needs root here")
