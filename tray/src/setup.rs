@@ -86,13 +86,13 @@ mod tests {
         let script = admin_command(
             Path::new("/Apps/tun4ai.app/Contents/Resources/helper/install-root.sh"),
             "ada",
-            Path::new("/Users/ada/Library/Application Support/tun4ai"),
+            Path::new("/tmp/config dir"),
             Path::new("/tmp/tun4ai setup/sing-box"),
             "zh-Hant",
             "Install tun4ai",
         );
         assert!(script.starts_with("do shell script \"/bin/bash "));
-        assert!(script.contains("'/Users/ada/Library/Application Support/tun4ai'"));
+        assert!(script.contains("'/tmp/config dir'"));
         assert!(script.contains("'/tmp/tun4ai setup/sing-box'"));
         assert!(script.contains(" en\""));
         assert!(script.ends_with("with prompt \"Install tun4ai\""));
