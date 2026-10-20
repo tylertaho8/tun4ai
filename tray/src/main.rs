@@ -16,6 +16,7 @@ use tray_icon::menu::{
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 mod leak;
+mod setup;
 
 // Written by helper/install-root.sh; the tray only reads them.
 const HELPER: &str = "/Library/PrivilegedHelperTools/tun4ai";
@@ -91,6 +92,12 @@ struct LeakState {
 
 static LEAK: Mutex<LeakState> = Mutex::new(LeakState { busy: false, rows: [None, None, None, None] });
 
+struct SetupRun {
+    busy: bool,
+}
+
+static SETUP: Mutex<SetupRun> = Mutex::new(SetupRun { busy: false });
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Goal {
     Enable,
@@ -126,12 +133,14 @@ struct Ui {
     test_speed: MenuItem,
     leak_rows: [IconMenuItem; 4],
     test_leak: MenuItem,
+    install: MenuItem,
     color: Icon,
     gray: Icon,
     shown_color: Mutex<Option<bool>>,
     shown_title: Mutex<String>,
     shown_probe: Mutex<[String; 4]>,
     shown_leak: Mutex<[String; 4]>,
+    shown_install: Mutex<String>,
     shown_dot: Cell<Option<Dot>>,
     shown_tunnel_on: Cell<Option<bool>>,
     shown_fw_checked: Cell<Option<bool>>,
@@ -176,6 +185,7 @@ fn main() {
         std::array::from_fn(|_| IconMenuItem::with_native_icon("", true, Some(NativeIcon::StatusNone), None));
     let test_leak = MenuItem::new(tr("检测泄露（出口 / DNS / WebRTC / IPv6）", "Check for leaks (exit / DNS / WebRTC / IPv6)"), true, cmd(Code::KeyL));
     let browser_check = MenuItem::new(tr("在浏览器中检测（ippure.com）…", "Check in browser (ippure.com)…"), true, None);
+    let install = MenuItem::new(tr("安装（下载 sing-box，需要管理员密码）", "Install (downloads sing-box, needs your password)"), true, None);
     let tunnel = MenuItem::new(tr("开启隧道", "Start tunnel"), true, cmd(Code::KeyO));
     let restart = MenuItem::new(tr("重启隧道", "Restart tunnel"), false, cmd(Code::KeyR));
     let firewall = CheckMenuItem::new(
@@ -206,6 +216,7 @@ fn main() {
         &test_leak,
         &browser_check,
         &separator(),
+        &install,
         &tunnel,
         &restart,
         &firewall,
@@ -225,6 +236,7 @@ fn main() {
     let test_speed_id = test_speed.id().clone();
     let test_leak_id = test_leak.id().clone();
     let browser_check_id = browser_check.id().clone();
+    let install_id = install.id().clone();
     let edit_id = edit.id().clone();
     let edit_node_id = edit_node.id().clone();
     let quit_id = quit.id().clone();
@@ -248,11 +260,16 @@ fn main() {
         speed,
         test_delay,
         test_speed,
+        leak_rows,
+        test_leak,
+        install,
         color,
         gray,
         shown_color: Mutex::new(None),
         shown_title: Mutex::new(String::new()),
         shown_probe: Mutex::new(Default::default()),
+        shown_leak: Mutex::new(Default::default()),
+        shown_install: Mutex::new(String::new()),
         shown_dot: Cell::new(None),
         shown_tunnel_on: Cell::new(None),
         shown_fw_checked: Cell::new(None),
@@ -289,6 +306,12 @@ fn main() {
                 start_probe(false);
             } else if event.id == test_speed_id {
                 start_probe(true);
+            } else if event.id == test_leak_id {
+                start_leak();
+            } else if event.id == browser_check_id {
+                let _ = Command::new("open").arg(BROWSER_CHECK_URL).spawn();
+            } else if event.id == install_id {
+                start_setup();
             } else if event.id == edit_id {
                 open_config("direct.txt");
             } else if event.id == edit_node_id {
@@ -443,25 +466,50 @@ fn refresh(ui: &Ui) {
         }
     }
     refresh_probe(ui);
+    refresh_leak(ui);
     let view = status_view(colored, enabled, alive, firewall_off, goal, zh());
+    let setup_busy = SETUP.try_lock().map(|s| s.busy).unwrap_or(false);
+    let installed = helper_installed();
+    let (title, dot) = if setup_busy {
+        (tr("正在安装…", "Installing…").to_string(), Dot::Yellow)
+    } else if !installed && !view.busy {
+        (tr("未安装 · 点「安装」完成设置", "Not installed · choose Install to set up").to_string(), Dot::Gray)
+    } else {
+        (view.title.clone(), view.dot)
+    };
     if let Ok(mut shown_title) = ui.shown_title.try_lock() {
-        if *shown_title != view.title {
-            ui.status.set_text(&view.title);
-            let _ = ui.tray.set_tooltip(Some(view.title.clone()));
-            *shown_title = view.title.clone();
+        if *shown_title != title {
+            ui.status.set_text(&title);
+            let _ = ui.tray.set_tooltip(Some(title.clone()));
+            *shown_title = title;
         }
     }
-    if ui.shown_dot.get() != Some(view.dot) {
-        ui.status.set_native_icon(Some(view.dot.icon()));
-        ui.shown_dot.set(Some(view.dot));
+    if ui.shown_dot.get() != Some(dot) {
+        ui.status.set_native_icon(Some(dot.icon()));
+        ui.shown_dot.set(Some(dot));
     }
     let tunnel_on = colored && !view.busy;
     if ui.shown_tunnel_on.get() != Some(tunnel_on) {
         ui.tunnel.set_text(if tunnel_on { tr("关闭隧道", "Stop tunnel") } else { tr("开启隧道", "Start tunnel") });
         ui.shown_tunnel_on.set(Some(tunnel_on));
     }
-    ui.tunnel.set_enabled(!view.busy);
-    ui.restart.set_enabled(!view.busy && (enabled || alive));
+    ui.tunnel.set_enabled(!view.busy && installed);
+    ui.restart.set_enabled(!view.busy && installed && (enabled || alive));
+    ui.firewall.set_enabled(installed && !setup_busy);
+    let install_text = if setup_busy {
+        tr("正在安装…", "Installing…")
+    } else if installed {
+        tr("重新安装（保留节点和设置）", "Reinstall (keeps your node and settings)")
+    } else {
+        tr("安装（下载 sing-box，需要管理员密码）", "Install (downloads sing-box, needs your password)")
+    };
+    if let Ok(mut shown) = ui.shown_install.try_lock() {
+        if *shown != install_text {
+            ui.install.set_text(install_text);
+            *shown = install_text.to_string();
+        }
+    }
+    ui.install.set_enabled(!setup_busy);
     if ui.shown_fw_checked.get() != Some(!view.fw_off) {
         ui.firewall.set_checked(!view.fw_off);
         ui.shown_fw_checked.set(Some(!view.fw_off));
@@ -613,6 +661,18 @@ mod tests {
     }
 
     #[test]
+    fn leak_rows_show_untested_checking_and_verdicts() {
+        let (text, icon) = leak_row_view(0, None, false, true);
+        assert_eq!(text, "出口：未测");
+        assert_eq!(icon, Dot::Gray.icon());
+        assert_eq!(leak_row_view(1, None, true, false).0, "DNS: checking…");
+        let fail = leak::Line { verdict: leak::Verdict::Fail, text: "2001:db8::1 goes direct, around the tunnel".into() };
+        let (text, icon) = leak_row_view(3, Some(&fail), false, false);
+        assert_eq!(text, "IPv6: 2001:db8::1 goes direct, around the tunnel");
+        assert_eq!(icon, Dot::Red.icon());
+    }
+
+    #[test]
     fn first_language_is_read_from_the_defaults_array() {
         assert_eq!(first_language("(\n    \"zh-Hans-CN\",\n    \"en-CN\"\n)\n"), Some("zh-Hans-CN".to_string()));
         assert_eq!(first_language("(\n    en,\n    ja\n)\n"), Some("en".to_string()));
@@ -692,6 +752,151 @@ fn refresh_probe(ui: &Ui) {
 
 fn set_probe(update: impl FnOnce(&mut Probe)) {
     update(&mut PROBE.lock().unwrap());
+}
+
+fn leak_row_view(index: usize, row: Option<&leak::Line>, busy: bool, zh: bool) -> (String, NativeIcon) {
+    let pick = |zh_text: &'static str, en: &'static str| if zh { zh_text } else { en };
+    let label = [
+        pick("出口：", "Exit: "),
+        pick("DNS：", "DNS: "),
+        pick("WebRTC：", "WebRTC: "),
+        pick("IPv6：", "IPv6: "),
+    ][index];
+    match row {
+        Some(line) => {
+            let icon = match line.verdict {
+                leak::Verdict::Pass => Dot::Green,
+                leak::Verdict::Fail => Dot::Red,
+                leak::Verdict::Unknown => Dot::Yellow,
+            };
+            (format!("{label}{}", line.text), icon.icon())
+        }
+        None if busy => (format!("{label}{}", pick("检测中…", "checking…")), Dot::Gray.icon()),
+        None => (format!("{label}{}", pick("未测", "not checked")), Dot::Gray.icon()),
+    }
+}
+
+fn refresh_leak(ui: &Ui) {
+    let Ok(state) = LEAK.try_lock() else {
+        return;
+    };
+    let views: Vec<_> = (0..4).map(|i| leak_row_view(i, state.rows[i].as_ref(), state.busy, zh())).collect();
+    let busy = state.busy;
+    drop(state);
+    ui.test_leak.set_enabled(!busy);
+    let Ok(mut shown) = ui.shown_leak.try_lock() else {
+        return;
+    };
+    for (i, (text, icon)) in views.into_iter().enumerate() {
+        let key = format!("{icon:?}{text}");
+        if shown[i] != key {
+            ui.leak_rows[i].set_text(&text);
+            ui.leak_rows[i].set_native_icon(Some(icon));
+            shown[i] = key;
+        }
+    }
+}
+
+fn start_leak() {
+    {
+        let mut state = LEAK.lock().unwrap();
+        if state.busy {
+            return;
+        }
+        state.busy = true;
+        state.rows = [None, None, None, None];
+    }
+    thread::spawn(|| {
+        let tunnel_up = Path::new(&state("ENABLED")).exists() && process_alive();
+        leak::check(zh(), tunnel_up, |i, line| LEAK.lock().unwrap().rows[i] = Some(line));
+        LEAK.lock().unwrap().busy = false;
+    });
+}
+
+fn helper_installed() -> bool {
+    Path::new(&format!("{HELPER}/bin/sing-box")).is_file()
+}
+
+fn start_setup() {
+    {
+        let mut setup = SETUP.lock().unwrap();
+        if setup.busy {
+            return;
+        }
+        setup.busy = true;
+    }
+    thread::spawn(|| {
+        if let Err(message) = perform_setup() {
+            *PENDING.lock().unwrap() = Some(message);
+        }
+        SETUP.lock().unwrap().busy = false;
+    });
+}
+
+// Download and check sing-box, copy the example config, then ask for the admin password once.
+fn perform_setup() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|err| err.to_string())?;
+    let resources = setup::resources_of(&exe).ok_or_else(|| tr(
+        "找不到安装资源。请从发布页下载 tun4ai.app",
+        "App resources are missing. Download tun4ai.app from the releases page.",
+    ))?;
+    let bundled = setup::bundle(&resources).ok_or_else(|| tr(
+        "安装包不完整。请重新下载 tun4ai.app",
+        "This app bundle is incomplete. Download tun4ai.app again.",
+    ))?;
+    setup::prepare_config(&bundled.examples, &config_dir()).map_err(|err| {
+        format!("{} {err}", tr("写配置目录失败：", "Could not create the config folder:"))
+    })?;
+    let work = std::env::temp_dir().join(format!("tun4ai-setup-{}", std::process::id()));
+    let _cleanup = Cleanup(work.clone());
+    fs::create_dir_all(&work).map_err(|err| err.to_string())?;
+    let fetch = bundled.fetch.to_str().ok_or("path")?;
+    let dest = work.to_str().ok_or("path")?;
+    let (code, _out, err) = run(&[fetch, dest]);
+    if code != 0 {
+        let detail = err.trim();
+        return Err(if detail.is_empty() {
+            tr("sing-box 下载或校验失败", "sing-box download or checksum failed").to_string()
+        } else {
+            detail.to_string()
+        });
+    }
+    let sing_box = work.join("sing-box");
+    let owner = run(&["/usr/bin/id", "-un"]).1.trim().to_string();
+    if owner.is_empty() {
+        return Err(tr("读不到当前用户名", "Could not read the current user name").to_string());
+    }
+    let prompt = tr("tun4ai 需要安装后台服务", "tun4ai needs to install its background service");
+    let script = setup::admin_command(
+        &bundled.install_root,
+        &owner,
+        &config_dir(),
+        &sing_box,
+        if zh() { "zh" } else { "en" },
+        prompt,
+    );
+    let (code, out, err) = run(&["/usr/bin/osascript", "-e", &script]);
+    if code != 0 {
+        let detail = if err.trim().is_empty() { out } else { err };
+        if detail.contains("User canceled") || detail.contains("-128") {
+            return Err(tr("已取消安装", "Install canceled").to_string());
+        }
+        let detail = detail.trim();
+        return Err(if detail.is_empty() {
+            tr("安装没有完成", "Install did not finish").to_string()
+        } else {
+            detail.to_string()
+        });
+    }
+    Ok(())
+}
+
+struct Cleanup(PathBuf);
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 // Delay test: ICMP, TCPing and real delay. Speed test: real delay first, then download only if it worked.

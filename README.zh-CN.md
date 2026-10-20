@@ -37,26 +37,21 @@ pf 防火墙：其余从 Wi-Fi / 有线网卡出去的流量一律拦截
 
 ## 安装
 
+从 [Releases](https://github.com/tylertaho8/tun4ai/releases) 下载 `tun4ai-macos.zip`，解压后打开 `tun4ai.app`。放在哪个文件夹都能用。
+
+应用没有经过苹果公证，首次打开会被拦截。右键点 **打开**，再点一次 **打开**。或者运行：
+
 ```bash
-git clone https://github.com/tylertaho8/tun4ai.git
-cd tun4ai
-./install.sh
+xattr -dr com.apple.quarantine tun4ai.app
 ```
 
-安装脚本会：
+然后在菜单栏菜单里选 **安装**。程序会自己下载 sing-box、校验校验和，并询问一次管理员密码。这时网络还没有任何变化。
 
-1. 从 GitHub Release 下载 sing-box 1.14.3 并校验 SHA-256；
-2. 构建菜单栏程序（如果脚本旁边已有 `tun4ai.app` 就直接用），复制到 `~/Applications`；
-3. 创建 `~/Library/Application Support/tun4ai/`，放入示例 `vless.txt` 和 `direct.txt`；
-4. 安装 root 辅助脚本和 launchd 服务（需要输入密码）。
-
-然后：
-
-1. 菜单栏图标 → **编辑 VLESS 节点…**，把 `vless://` 链接单独粘成一行，保存。
-2. 菜单栏图标 → **开启隧道**。
+1. **编辑 VLESS 节点…**，把 `vless://` 链接单独粘成一行，保存。
+2. **开启隧道**。
 3. 确认网页能打开后，再勾选 **防火墙**。
 
-升级时再运行一次 `./install.sh` 即可，节点、直连名单和防火墙选择都会保留。
+升级时在同一菜单里选 **重新安装**。节点、直连名单和防火墙选择都会保留。从源码用 `./install.sh` 安装仍然可以，写在「开发」一节。
 
 ## 配置
 

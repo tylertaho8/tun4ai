@@ -37,26 +37,21 @@ pf kill switch: anything else leaving the Wi-Fi / Ethernet interface is blocked
 
 ## Install
 
+Download `tun4ai-macos.zip` from [Releases](https://github.com/tylertaho8/tun4ai/releases), unzip it and open `tun4ai.app`. It runs from any folder.
+
+macOS blocks the first open because the app is not notarized. Right-click the app, choose **Open**, then **Open** again. Or run:
+
 ```bash
-git clone https://github.com/tylertaho8/tun4ai.git
-cd tun4ai
-./install.sh
+xattr -dr com.apple.quarantine tun4ai.app
 ```
 
-The installer:
+Then, in the menu bar menu, choose **Install**. The app downloads sing-box, checks its checksum and asks for your password once. Your network does not change.
 
-1. downloads sing-box 1.14.3 from its GitHub release and checks the SHA-256;
-2. builds the menu bar app (or uses a prebuilt `tun4ai.app` next to the script) and copies it to `~/Applications`;
-3. creates `~/Library/Application Support/tun4ai/` with example `vless.txt` and `direct.txt`;
-4. installs the root helper and the launchd service (needs your password).
-
-Then:
-
-1. Menu bar icon → **Edit VLESS node…**, paste your `vless://` link on its own line, save.
-2. Menu bar icon → **Start tunnel**.
+1. **Edit VLESS node…**, paste your `vless://` link on its own line, save.
+2. **Start tunnel**.
 3. Once pages load, tick **Firewall**.
 
-Run `./install.sh` again to upgrade. Your node, direct list and firewall choice are kept.
+Choose **Reinstall** in the same menu to upgrade. Your node, direct list and firewall choice are kept. Building from source with `./install.sh` still works, and is described under Development.
 
 ## Configuration
 

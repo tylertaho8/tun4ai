@@ -1,0 +1,43 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: version matches the tag
+        run: |
+          ver="$(awk -F'"' '/^version/{print $2; exit}' tray/Cargo.toml)"
+          test "$GITHUB_REF_NAME" = "v$ver"
+
+      - name: universal app
+        run: UNIVERSAL=1 ./scripts/bundle-app.sh dist/tun4ai.app
+
+      - name: zip
+        run: ditto -c -k --keepParent dist/tun4ai.app tun4ai-macos.zip
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'EOF'
+          Download `tun4ai-macos.zip`, unzip it and open `tun4ai.app`.
+
+          macOS blocks the first open because the app is not notarized. Right-click the app, choose Open, then Open again. Or run `xattr -dr com.apple.quarantine tun4ai.app`.
+
+          Choose **Install** in the menu bar menu. The app downloads sing-box, checks its checksum and asks for your password once. Nothing about your network changes until you start the tunnel.
+
+          下载 `tun4ai-macos.zip`，解压后打开 `tun4ai.app`。首次若被系统拦截，右键点“打开”。然后在菜单栏选 **安装**，程序会自己下载 sing-box 并询问一次管理员密码。开启隧道之前，网络没有任何变化。
+          EOF
+          sed 's/^          //' notes.md > notes.clean.md
+          gh release create "$GITHUB_REF_NAME" tun4ai-macos.zip \
+            --title "tun4ai $GITHUB_REF_NAME" \
+            --notes-file notes.clean.md

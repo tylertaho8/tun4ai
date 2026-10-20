@@ -10,6 +10,7 @@ Please report vulnerabilities privately through [GitHub Security Advisories](htt
 
 - Anything that lets a non-admin user or another local process gain root through the helper, the sudoers entry or the launchd service.
 - The root helper reading, following or executing user-controlled paths.
+- The first-run installer, which runs once from the app bundle with your password, installing anything other than the bundled helper and the checksum-verified sing-box.
 - Traffic or DNS leaving outside the tunnel while the firewall is on.
 - The node UUID ending up somewhere readable by other users.
 
