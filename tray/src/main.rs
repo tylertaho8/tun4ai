@@ -15,6 +15,8 @@ use tray_icon::menu::{
 };
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
+mod leak;
+
 // Written by helper/install-root.sh; the tray only reads them.
 const HELPER: &str = "/Library/PrivilegedHelperTools/tun4ai";
 const STATE: &str = "/Library/Application Support/tun4ai";
@@ -22,6 +24,7 @@ const STATE: &str = "/Library/Application Support/tun4ai";
 const LOCAL_PROXY: &str = "socks5h://127.0.0.1:17897";
 const PING_URL: &str = "https://www.google.com/generate_204";
 const SPEED_URL: &str = "https://cachefly.cachefly.net/50mb.test";
+const BROWSER_CHECK_URL: &str = "https://ippure.com/";
 const ICON_SIZE: u32 = 36;
 const ON_RGB: [u8; 3] = [46, 170, 110];
 const OFF_RGB: [u8; 3] = [140, 140, 140];
@@ -80,6 +83,14 @@ static PROBE: Mutex<Probe> = Mutex::new(Probe {
     speed: String::new(),
 });
 
+// Rows: exit, DNS, WebRTC, IPv6. None is "not tested yet", or "testing" while busy.
+struct LeakState {
+    busy: bool,
+    rows: [Option<leak::Line>; 4],
+}
+
+static LEAK: Mutex<LeakState> = Mutex::new(LeakState { busy: false, rows: [None, None, None, None] });
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Goal {
     Enable,
@@ -113,11 +124,14 @@ struct Ui {
     speed: MenuItem,
     test_delay: MenuItem,
     test_speed: MenuItem,
+    leak_rows: [IconMenuItem; 4],
+    test_leak: MenuItem,
     color: Icon,
     gray: Icon,
     shown_color: Mutex<Option<bool>>,
     shown_title: Mutex<String>,
     shown_probe: Mutex<[String; 4]>,
+    shown_leak: Mutex<[String; 4]>,
     shown_dot: Cell<Option<Dot>>,
     shown_tunnel_on: Cell<Option<bool>>,
     shown_fw_checked: Cell<Option<bool>>,
@@ -157,6 +171,11 @@ fn main() {
     let speed = MenuItem::new("", false, None);
     let test_delay = MenuItem::new(tr("测延迟", "Test latency"), true, cmd(Code::KeyT));
     let test_speed = MenuItem::new(tr("测速（最多耗 50MB 流量）", "Test speed (uses up to 50 MB)"), true, None);
+    // Enabled like the status line, so the dots keep their color. Clicking them does nothing.
+    let leak_rows: [IconMenuItem; 4] =
+        std::array::from_fn(|_| IconMenuItem::with_native_icon("", true, Some(NativeIcon::StatusNone), None));
+    let test_leak = MenuItem::new(tr("检测泄露（出口 / DNS / WebRTC / IPv6）", "Check for leaks (exit / DNS / WebRTC / IPv6)"), true, cmd(Code::KeyL));
+    let browser_check = MenuItem::new(tr("在浏览器中检测（ippure.com）…", "Check in browser (ippure.com)…"), true, None);
     let tunnel = MenuItem::new(tr("开启隧道", "Start tunnel"), true, cmd(Code::KeyO));
     let restart = MenuItem::new(tr("重启隧道", "Restart tunnel"), false, cmd(Code::KeyR));
     let firewall = CheckMenuItem::new(
@@ -180,6 +199,13 @@ fn main() {
         &test_delay,
         &test_speed,
         &separator(),
+        &leak_rows[0],
+        &leak_rows[1],
+        &leak_rows[2],
+        &leak_rows[3],
+        &test_leak,
+        &browser_check,
+        &separator(),
         &tunnel,
         &restart,
         &firewall,
@@ -197,6 +223,8 @@ fn main() {
     let firewall_id = firewall.id().clone();
     let test_delay_id = test_delay.id().clone();
     let test_speed_id = test_speed.id().clone();
+    let test_leak_id = test_leak.id().clone();
+    let browser_check_id = browser_check.id().clone();
     let edit_id = edit.id().clone();
     let edit_node_id = edit_node.id().clone();
     let quit_id = quit.id().clone();
