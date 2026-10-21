@@ -243,13 +243,10 @@ struct PanelRoot: View {
                 PanelBridge.shared?.fit()
             }
         }
-        .confirmationDialog(
-            model.t("防火墙保护开着。断开隧道后将无法访问外网。", "The firewall is on. Disconnecting blocks the internet."),
-            isPresented: $model.confirmOff,
-            titleVisibility: .visible
-        ) {
-            Button(model.t("断开", "Disconnect"), role: .destructive) { model.send("tunnel") }
-            Button(model.t("取消", "Cancel"), role: .cancel) {}
+        .onChange(of: model.confirmOff) { _ in
+            DispatchQueue.main.async {
+                PanelBridge.shared?.fit()
+            }
         }
     }
 
@@ -435,8 +432,12 @@ extension PanelRoot {
                     if model.tunnelOn && model.firewall {
                         model.confirmOff = true
                     } else {
+                        model.confirmOff = false
                         model.send("tunnel")
                     }
+                }
+                if model.confirmOff {
+                    confirmDisconnect
                 }
                 hairline()
                 actionRow("server.rack", model.t("节点管理", "Node"), "⌘N", tint: .primary, enabled: true) { model.send("node") }
@@ -452,11 +453,36 @@ extension PanelRoot {
         }
     }
 
+    private var confirmDisconnect: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(model.t("防火墙保护开着。断开后将无法访问外网。", "The firewall is on. Disconnecting blocks the internet."))
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                Button(model.t("取消", "Cancel")) { model.confirmOff = false }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                Button(model.t("断开", "Disconnect")) {
+                    model.confirmOff = false
+                    model.send("tunnel")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.red)
+            }
+            .font(.system(size: 13, weight: .semibold))
+        }
+        .padding(.leading, 44)
+        .padding(.trailing, 10)
+        .padding(.vertical, 8)
+    }
+
     private var installRow: some View {
         HStack(spacing: 8) {
             Image(systemName: "arrow.down.circle")
-                .font(.system(size: 12, weight: .medium))
-                .frame(width: 16)
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: 26, alignment: .center)
             Text(model.install.isEmpty ? model.t("安装", "Install") : model.install)
                 .font(.system(size: 13))
                 .lineLimit(2)
@@ -642,9 +668,9 @@ private func metric(_ symbol: String, _ name: String, _ value: String) -> some V
 private func actionRow(_ symbol: String, _ title: String, _ shortcut: String?, tint: Color, enabled: Bool, action: @escaping () -> Void) -> some View {
     HStack(spacing: 8) {
         Image(systemName: symbol)
-            .font(.system(size: 12, weight: .medium))
+            .font(.system(size: 13, weight: .medium))
             .foregroundStyle(tint)
-            .frame(width: 16)
+            .frame(width: 26, alignment: .center)
         Text(title)
             .font(.system(size: 13))
             .foregroundStyle(tint)
