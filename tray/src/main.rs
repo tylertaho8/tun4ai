@@ -1,4 +1,3 @@
-use std::cell::Cell;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -9,13 +8,12 @@ use std::time::{Duration, Instant};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask};
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode};
-use tray_icon::menu::accelerator::{Accelerator, Code, Modifiers};
-use tray_icon::menu::{
-    CheckMenuItem, IconMenuItem, Menu, MenuEvent, MenuItem, NativeIcon, PredefinedMenuItem,
-};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+#[cfg(test)]
+use tray_icon::menu::NativeIcon;
+use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 mod leak;
+mod panel;
 mod setup;
 
 // Written by helper/install-root.sh; the tray only reads them.
@@ -121,29 +119,9 @@ static CTRL: Mutex<Control> = Mutex::new(Control {
 
 struct Ui {
     tray: TrayIcon,
-    status: IconMenuItem,
-    tunnel: MenuItem,
-    restart: MenuItem,
-    firewall: CheckMenuItem,
-    icmp: MenuItem,
-    tcp: MenuItem,
-    real: MenuItem,
-    speed: MenuItem,
-    test_delay: MenuItem,
-    test_speed: MenuItem,
-    leak_rows: [IconMenuItem; 4],
-    test_leak: MenuItem,
-    install: MenuItem,
     color: Icon,
     gray: Icon,
     shown_color: Mutex<Option<bool>>,
-    shown_title: Mutex<String>,
-    shown_probe: Mutex<[String; 4]>,
-    shown_leak: Mutex<[String; 4]>,
-    shown_install: Mutex<String>,
-    shown_dot: Cell<Option<Dot>>,
-    shown_tunnel_on: Cell<Option<bool>>,
-    shown_fw_checked: Cell<Option<bool>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -155,6 +133,7 @@ enum Dot {
 }
 
 impl Dot {
+    #[cfg(test)]
     fn icon(self) -> NativeIcon {
         match self {
             Dot::Green => NativeIcon::StatusAvailable,
@@ -165,115 +144,18 @@ impl Dot {
     }
 }
 
-fn cmd(code: Code) -> Option<Accelerator> {
-    Some(Accelerator::new(Some(Modifiers::SUPER), code))
-}
+
 
 fn main() {
     let color = Icon::from_rgba(shield_rgba(ICON_SIZE, ON_RGB), ICON_SIZE, ICON_SIZE).expect("color icon");
     let gray = Icon::from_rgba(shield_rgba(ICON_SIZE, OFF_RGB), ICON_SIZE, ICON_SIZE).expect("gray icon");
-    // The status line stays clickable so the dot keeps its color; clicking it opens the log.
-    let status = IconMenuItem::with_native_icon(tr("正在读取…", "Loading…"), true, Some(NativeIcon::StatusNone), None);
-    let icmp = MenuItem::new("", false, None);
-    let tcp = MenuItem::new("", false, None);
-    let real = MenuItem::new("", false, None);
-    let speed = MenuItem::new("", false, None);
-    let test_delay = MenuItem::new(tr("测延迟", "Test latency"), true, cmd(Code::KeyT));
-    let test_speed = MenuItem::new(tr("测速（最多耗 50MB 流量）", "Test speed (uses up to 50 MB)"), true, None);
-    // Enabled like the status line, so the dots keep their color. Clicking them does nothing.
-    let leak_rows: [IconMenuItem; 4] =
-        std::array::from_fn(|_| IconMenuItem::with_native_icon("", true, Some(NativeIcon::StatusNone), None));
-    let test_leak = MenuItem::new(tr("检测泄露（出口 / DNS / WebRTC / IPv6）", "Check for leaks (exit / DNS / WebRTC / IPv6)"), true, cmd(Code::KeyL));
-    let browser_check = MenuItem::new(tr("在浏览器中检测（ippure.com）…", "Check in browser (ippure.com)…"), true, None);
-    let install = MenuItem::new(tr("安装（下载 sing-box，需要管理员密码）", "Install (downloads sing-box, needs your password)"), true, None);
-    let tunnel = MenuItem::new(tr("开启隧道", "Start tunnel"), true, cmd(Code::KeyO));
-    let restart = MenuItem::new(tr("重启隧道", "Restart tunnel"), false, cmd(Code::KeyR));
-    let firewall = CheckMenuItem::new(
-        tr("防火墙（隧道断了就断网）", "Firewall (block internet if the tunnel drops)"),
-        true,
-        false,
-        None,
-    );
-    let edit = MenuItem::new(tr("编辑直连名单…", "Edit direct list…"), true, cmd(Code::KeyE));
-    let edit_node = MenuItem::new(tr("编辑 VLESS 节点…", "Edit VLESS node…"), true, cmd(Code::KeyN));
-    let quit = MenuItem::new(tr("退出菜单栏程序", "Quit menu bar app"), true, cmd(Code::KeyQ));
-    let menu = Menu::new();
-    let separator = PredefinedMenuItem::separator;
-    menu.append_items(&[
-        &status,
-        &separator(),
-        &icmp,
-        &tcp,
-        &real,
-        &speed,
-        &test_delay,
-        &test_speed,
-        &separator(),
-        &leak_rows[0],
-        &leak_rows[1],
-        &leak_rows[2],
-        &leak_rows[3],
-        &test_leak,
-        &browser_check,
-        &separator(),
-        &install,
-        &tunnel,
-        &restart,
-        &firewall,
-        &separator(),
-        &edit_node,
-        &edit,
-        &separator(),
-        &quit,
-    ])
-    .ok();
-
-    let status_id = status.id().clone();
-    let tunnel_id = tunnel.id().clone();
-    let restart_id = restart.id().clone();
-    let firewall_id = firewall.id().clone();
-    let test_delay_id = test_delay.id().clone();
-    let test_speed_id = test_speed.id().clone();
-    let test_leak_id = test_leak.id().clone();
-    let browser_check_id = browser_check.id().clone();
-    let install_id = install.id().clone();
-    let edit_id = edit.id().clone();
-    let edit_node_id = edit_node.id().clone();
-    let quit_id = quit.id().clone();
-
     let tray = TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
         .with_icon(gray.clone())
         .with_icon_as_template(false)
+        .with_tooltip("tun4ai")
         .build()
         .expect("status item");
-
-    let ui = Ui {
-        tray,
-        status,
-        tunnel,
-        restart,
-        firewall,
-        icmp,
-        tcp,
-        real,
-        speed,
-        test_delay,
-        test_speed,
-        leak_rows,
-        test_leak,
-        install,
-        color,
-        gray,
-        shown_color: Mutex::new(None),
-        shown_title: Mutex::new(String::new()),
-        shown_probe: Mutex::new(Default::default()),
-        shown_leak: Mutex::new(Default::default()),
-        shown_install: Mutex::new(String::new()),
-        shown_dot: Cell::new(None),
-        shown_tunnel_on: Cell::new(None),
-        shown_fw_checked: Cell::new(None),
-    };
+    let ui = Ui { tray, color, gray, shown_color: Mutex::new(None) };
     let mtm = MainThreadMarker::new().expect("main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
@@ -289,38 +171,38 @@ fn main() {
         ) {
             app.sendEvent(&event);
         }
-        while let Ok(event) = MenuEvent::receiver().try_recv() {
-            if event.id == tunnel_id {
-                start_action(if ui.shown_tunnel_on.get() == Some(true) { "disable" } else { "enable" });
-            } else if event.id == restart_id {
-                start_action("restart");
-            } else if event.id == firewall_id {
-                // The item has already flipped its own check mark.
-                start_action(if ui.firewall.is_checked() { "firewall-on" } else { "firewall-off" });
-                ui.shown_fw_checked.set(None);
-            } else if event.id == status_id {
-                let _ = Command::new("open")
-                    .args(["-a", "Console", &state("run/supervise.log")])
-                    .spawn();
-            } else if event.id == test_delay_id {
-                start_probe(false);
-            } else if event.id == test_speed_id {
-                start_probe(true);
-            } else if event.id == test_leak_id {
-                start_leak();
-            } else if event.id == browser_check_id {
-                let _ = Command::new("open").arg(BROWSER_CHECK_URL).spawn();
-            } else if event.id == install_id {
-                start_setup();
-            } else if event.id == edit_id {
-                open_config("direct.txt");
-            } else if event.id == edit_node_id {
-                open_config("vless.txt");
-            } else if event.id == quit_id {
-                std::process::exit(0);
+        while let Ok(event) = TrayIconEvent::receiver().try_recv() {
+            if let TrayIconEvent::Click { button, button_state, .. } = event {
+                if button == MouseButton::Left && button_state == MouseButtonState::Up {
+                    panel::toggle(mtm);
+                }
             }
         }
+        while let Some(action) = panel::poll() {
+            handle_panel(action);
+        }
         refresh(&ui);
+    }
+}
+
+fn handle_panel(action: panel::Action) {
+    match action {
+        panel::Action::Delay => start_probe(false),
+        panel::Action::Speed => start_probe(true),
+        panel::Action::Leak => start_leak(),
+        panel::Action::Browser => {
+            let _ = Command::new("open").arg(BROWSER_CHECK_URL).spawn();
+        }
+        panel::Action::Tunnel => {
+            let on = Path::new(&state("ENABLED")).exists() && process_alive();
+            start_action(if on { "disable" } else { "enable" });
+        }
+        panel::Action::Restart => start_action("restart"),
+        panel::Action::Firewall(on) => start_action(if on { "firewall-on" } else { "firewall-off" }),
+        panel::Action::EditNode => open_config("vless.txt"),
+        panel::Action::EditDirect => open_config("direct.txt"),
+        panel::Action::Install => start_setup(),
+        panel::Action::Quit => std::process::exit(0),
     }
 }
 
@@ -465,8 +347,6 @@ fn refresh(ui: &Ui) {
             *shown = Some(colored);
         }
     }
-    refresh_probe(ui);
-    refresh_leak(ui);
     let view = status_view(colored, enabled, alive, firewall_off, goal, zh());
     let setup_busy = SETUP.try_lock().map(|s| s.busy).unwrap_or(false);
     let installed = helper_installed();
@@ -475,44 +355,11 @@ fn refresh(ui: &Ui) {
     } else if !installed && !view.busy {
         (tr("未安装 · 点「安装」完成设置", "Not installed · choose Install to set up").to_string(), Dot::Gray)
     } else {
-        (view.title.clone(), view.dot)
+        (view.title, view.dot)
     };
-    if let Ok(mut shown_title) = ui.shown_title.try_lock() {
-        if *shown_title != title {
-            ui.status.set_text(&title);
-            let _ = ui.tray.set_tooltip(Some(title.clone()));
-            *shown_title = title;
-        }
-    }
-    if ui.shown_dot.get() != Some(dot) {
-        ui.status.set_native_icon(Some(dot.icon()));
-        ui.shown_dot.set(Some(dot));
-    }
-    let tunnel_on = colored && !view.busy;
-    if ui.shown_tunnel_on.get() != Some(tunnel_on) {
-        ui.tunnel.set_text(if tunnel_on { tr("关闭隧道", "Stop tunnel") } else { tr("开启隧道", "Start tunnel") });
-        ui.shown_tunnel_on.set(Some(tunnel_on));
-    }
-    ui.tunnel.set_enabled(!view.busy && installed);
-    ui.restart.set_enabled(!view.busy && installed && (enabled || alive));
-    ui.firewall.set_enabled(installed && !setup_busy);
-    let install_text = if setup_busy {
-        tr("正在安装…", "Installing…")
-    } else if installed {
-        tr("重新安装（保留节点和设置）", "Reinstall (keeps your node and settings)")
-    } else {
-        tr("安装（下载 sing-box，需要管理员密码）", "Install (downloads sing-box, needs your password)")
-    };
-    if let Ok(mut shown) = ui.shown_install.try_lock() {
-        if *shown != install_text {
-            ui.install.set_text(install_text);
-            *shown = install_text.to_string();
-        }
-    }
-    ui.install.set_enabled(!setup_busy);
-    if ui.shown_fw_checked.get() != Some(!view.fw_off) {
-        ui.firewall.set_checked(!view.fw_off);
-        ui.shown_fw_checked.set(Some(!view.fw_off));
+    let _ = ui.tray.set_tooltip(Some(title.clone()));
+    if panel::is_open() {
+        panel::apply(&panel_model(&title, dot, view.fw_off, view.busy, installed, setup_busy, enabled, alive));
     }
 }
 
@@ -654,6 +501,23 @@ mod tests {
     }
 
     #[test]
+    fn panel_headlines_follow_the_long_status() {
+        assert_eq!(panel_headline("正在开启隧道…"), "正在连接");
+        assert_eq!(panel_headline("正在关闭隧道…"), "正在断开");
+        assert_eq!(panel_headline("隧道已连接 · 防火墙开"), "隧道已连接");
+        assert_eq!(panel_headline("隧道断开 · 外网已切断"), "连接失败");
+        assert_eq!(panel_mark("正在重启隧道…"), "wait");
+        assert_eq!(panel_mark("隧道关 · 防火墙关，网络直连"), "off");
+        assert_eq!(panel_headline("Starting tunnel…"), "Connecting");
+        assert_eq!(panel_headline("Stopping tunnel…"), "Disconnecting");
+        assert_eq!(panel_headline("Tunnel up · firewall on"), "Tunnel connected");
+        assert_eq!(panel_headline("Tunnel down · internet blocked"), "Connection failed");
+        assert_eq!(panel_headline("Tunnel off · firewall off, direct"), "Tunnel off");
+        assert_eq!(panel_mark("Restarting tunnel…"), "wait");
+        assert_eq!(panel_mark("Tunnel down · internet blocked"), "fail");
+    }
+
+    #[test]
     fn english_titles_match_the_same_states() {
         assert_eq!(status_view(true, true, true, false, None, false).title, "Tunnel up · firewall on");
         assert_eq!(status_view(false, true, false, false, None, false).title, "Tunnel down · internet blocked");
@@ -723,30 +587,169 @@ mod tests {
     }
 }
 
-fn refresh_probe(ui: &Ui) {
-    let Ok(probe) = PROBE.try_lock() else {
-        return;
+fn panel_model(
+    title: &str,
+    dot: Dot,
+    firewall_off: bool,
+    busy: bool,
+    installed: bool,
+    setup_busy: bool,
+    enabled: bool,
+    alive: bool,
+) -> panel::Model {
+    let blank = || tr("未测", "not tested").to_string();
+    let (probe_busy, icmp, tcp, real, speed) = match PROBE.try_lock() {
+        Ok(probe) => (probe.busy, shown(&probe.icmp, blank()), shown(&probe.tcp, blank()), shown(&probe.real, blank()), shown(&probe.speed, blank())),
+        Err(_) => (true, blank(), blank(), blank(), blank()),
     };
-    let shown_or = |value: &str| if value.is_empty() { tr("未测", "not tested").to_string() } else { value.to_string() };
-    let want = [
-        format!("{}{}", tr("ICMP 延迟：", "ICMP latency: "), shown_or(&probe.icmp)),
-        format!("{}{}", tr("TCPing（TLS 握手）：", "TCPing (TLS handshake): "), shown_or(&probe.tcp)),
-        format!("{}{}", tr("真实延迟：", "Real latency: "), shown_or(&probe.real)),
-        format!("{}{}", tr("下载速度：", "Download speed: "), shown_or(&probe.speed)),
-    ];
-    let busy = probe.busy;
-    drop(probe);
-    ui.test_delay.set_enabled(!busy);
-    ui.test_speed.set_enabled(!busy);
-    let Ok(mut shown) = ui.shown_probe.try_lock() else {
-        return;
-    };
-    let items = [&ui.icmp, &ui.tcp, &ui.real, &ui.speed];
-    for (i, text) in want.into_iter().enumerate() {
-        if shown[i] != text {
-            items[i].set_text(&text);
-            shown[i] = text;
+    let (leak_busy, leaks) = match LEAK.try_lock() {
+        Ok(state) => {
+            let lines = std::array::from_fn(|i| match state.rows[i].as_ref() {
+                Some(line) => panel::Line { text: line.text.clone(), tone: tone_of(verdict_dot(line.verdict)) },
+                None if state.busy => panel::Line { text: tr("检测中…", "checking…").to_string(), tone: panel::Tone::Gray },
+                None => panel::Line { text: blank(), tone: panel::Tone::Gray },
+            });
+            (state.busy, lines)
         }
+        Err(_) => (true, std::array::from_fn(|_| panel::Line { text: blank(), tone: panel::Tone::Gray })),
+    };
+    let install = if setup_busy {
+        tr("正在安装…", "Installing…")
+    } else if installed {
+        tr("重新安装（保留节点和设置）", "Reinstall (keeps your node and settings)")
+    } else {
+        tr("安装（下载 sing-box，需要管理员密码）", "Install (downloads sing-box, needs your password)")
+    };
+    let tunnel_on = enabled && alive;
+    panel::Model {
+        status: panel_headline(title),
+        subtitle: panel_subtitle(title, tunnel_on, firewall_off),
+        status_tone: tone_of(dot),
+        mark: panel_mark(title).to_string(),
+        zh: zh(),
+        icmp,
+        tcp,
+        real,
+        speed,
+        leaks,
+        tunnel_on,
+        tunnel_enabled: !busy && installed,
+        restart_enabled: !busy && installed && (enabled || alive),
+        firewall_on: !firewall_off,
+        firewall_enabled: installed && !setup_busy,
+        delay_enabled: !probe_busy,
+        speed_enabled: !probe_busy,
+        leak_enabled: !leak_busy,
+        install: install.to_string(),
+        install_enabled: !setup_busy,
+        install_visible: true,
+    }
+}
+
+fn panel_headline(status: &str) -> String {
+    let en = status.starts_with("Tunnel")
+        || status.starts_with("Starting")
+        || status.starts_with("Stopping")
+        || status.starts_with("Restarting");
+    if status.starts_with("正在关闭") || status.starts_with("Stopping") {
+        return if en { "Disconnecting" } else { "正在断开" }.into();
+    }
+    if status.starts_with("正在") || status.starts_with("Starting") || status.starts_with("Restarting") {
+        return if en { "Connecting" } else { "正在连接" }.into();
+    }
+    if status.contains("已连接") || status.starts_with("Tunnel up") {
+        return if en { "Tunnel connected" } else { "隧道已连接" }.into();
+    }
+    if status.contains("断开") || status.starts_with("Tunnel down") {
+        return if en { "Connection failed" } else { "连接失败" }.into();
+    }
+    if en { "Tunnel off" } else { "隧道未连接" }.into()
+}
+
+fn panel_mark(status: &str) -> &'static str {
+    if status.starts_with("正在") || status.starts_with("Stopping") || status.starts_with("Starting") || status.starts_with("Restarting") {
+        "wait"
+    } else if status.contains("已连接") || status.starts_with("Tunnel up") {
+        "on"
+    } else if status.contains("断开") || status.starts_with("Tunnel down") {
+        "fail"
+    } else {
+        "off"
+    }
+}
+
+fn panel_subtitle(status: &str, tunnel_on: bool, firewall_off: bool) -> String {
+    if tunnel_on && firewall_off {
+        return tr("防火墙已关闭，断开后会漏网", "Firewall is off, a drop would leak").into();
+    }
+    if tunnel_on {
+        return format!("VLESS · {}", protected_for());
+    }
+    if let Some((_, rest)) = status.split_once('·') {
+        return rest.trim().to_string();
+    }
+    if firewall_off {
+        tr("网络直连", "Direct").into()
+    } else {
+        tr("外网已切断", "Internet blocked").into()
+    }
+}
+
+fn protected_for() -> String {
+    let Ok(meta) = fs::metadata(state("ENABLED")) else {
+        return tr("已保护", "protected").into();
+    };
+    let Ok(modified) = meta.modified() else {
+        return tr("已保护", "protected").into();
+    };
+    let secs = modified.elapsed().map(|d| d.as_secs()).unwrap_or(0);
+    if zh() {
+        if secs < 60 {
+            "已保护不到 1 分钟".into()
+        } else if secs < 3600 {
+            format!("已保护 {} 分钟", secs / 60)
+        } else {
+            let hours = secs / 3600;
+            let minutes = (secs % 3600) / 60;
+            if minutes == 0 {
+                format!("已保护 {hours} 小时")
+            } else {
+                format!("已保护 {hours}小时{minutes}分钟")
+            }
+        }
+    } else if secs < 60 {
+        "protected for under a minute".into()
+    } else if secs < 3600 {
+        format!("protected for {} min", secs / 60)
+    } else {
+        let hours = secs / 3600;
+        let minutes = (secs % 3600) / 60;
+        if minutes == 0 {
+            format!("protected for {hours} h")
+        } else {
+            format!("protected for {hours} h {minutes} min")
+        }
+    }
+}
+
+fn shown(value: &str, fallback: String) -> String {
+    if value.is_empty() { fallback } else { value.to_string() }
+}
+
+fn tone_of(dot: Dot) -> panel::Tone {
+    match dot {
+        Dot::Green => panel::Tone::Green,
+        Dot::Yellow => panel::Tone::Yellow,
+        Dot::Red => panel::Tone::Red,
+        Dot::Gray => panel::Tone::Gray,
+    }
+}
+
+fn verdict_dot(verdict: leak::Verdict) -> Dot {
+    match verdict {
+        leak::Verdict::Pass => Dot::Green,
+        leak::Verdict::Fail => Dot::Red,
+        leak::Verdict::Unknown => Dot::Yellow,
     }
 }
 
@@ -754,6 +757,7 @@ fn set_probe(update: impl FnOnce(&mut Probe)) {
     update(&mut PROBE.lock().unwrap());
 }
 
+#[cfg(test)]
 fn leak_row_view(index: usize, row: Option<&leak::Line>, busy: bool, zh: bool) -> (String, NativeIcon) {
     let pick = |zh_text: &'static str, en: &'static str| if zh { zh_text } else { en };
     let label = [
@@ -773,27 +777,6 @@ fn leak_row_view(index: usize, row: Option<&leak::Line>, busy: bool, zh: bool) -
         }
         None if busy => (format!("{label}{}", pick("检测中…", "checking…")), Dot::Gray.icon()),
         None => (format!("{label}{}", pick("未测", "not checked")), Dot::Gray.icon()),
-    }
-}
-
-fn refresh_leak(ui: &Ui) {
-    let Ok(state) = LEAK.try_lock() else {
-        return;
-    };
-    let views: Vec<_> = (0..4).map(|i| leak_row_view(i, state.rows[i].as_ref(), state.busy, zh())).collect();
-    let busy = state.busy;
-    drop(state);
-    ui.test_leak.set_enabled(!busy);
-    let Ok(mut shown) = ui.shown_leak.try_lock() else {
-        return;
-    };
-    for (i, (text, icon)) in views.into_iter().enumerate() {
-        let key = format!("{icon:?}{text}");
-        if shown[i] != key {
-            ui.leak_rows[i].set_text(&text);
-            ui.leak_rows[i].set_native_icon(Some(icon));
-            shown[i] = key;
-        }
     }
 }
 

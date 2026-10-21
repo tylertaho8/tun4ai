@@ -19,11 +19,16 @@ if [ "${UNIVERSAL:-}" = 1 ]; then
   lipo -create -output "$OUT/Contents/MacOS/tun4ai" \
     "$ROOT/tray/target/aarch64-apple-darwin/release/tun4ai" \
     "$ROOT/tray/target/x86_64-apple-darwin/release/tun4ai"
-  chmod 755 "$OUT/Contents/MacOS/tun4ai"
+  lipo -create -output "$OUT/Contents/MacOS/Tun4aiPanel" \
+    "$ROOT/tray/target/aarch64-apple-darwin/release/Tun4aiPanel" \
+    "$ROOT/tray/target/x86_64-apple-darwin/release/Tun4aiPanel"
+  chmod 755 "$OUT/Contents/MacOS/tun4ai" "$OUT/Contents/MacOS/Tun4aiPanel"
 else
   cargo build --release --manifest-path "$ROOT/tray/Cargo.toml"
   install -m 755 "$ROOT/tray/target/release/tun4ai" "$OUT/Contents/MacOS/tun4ai"
+  install -m 755 "$ROOT/tray/target/release/Tun4aiPanel" "$OUT/Contents/MacOS/Tun4aiPanel"
 fi
+codesign --force --sign - "$OUT/Contents/MacOS/Tun4aiPanel" >/dev/null 2>&1 || true
 # The running app installs from these copies, so a downloaded zip needs nothing else.
 for f in supervise.sh enable.sh disable.sh firewall-on.sh firewall-off.sh panic-open.sh uninstall-root.sh install-root.sh; do
   install -m 755 "$ROOT/helper/$f" "$OUT/Contents/Resources/helper/$f"

@@ -9,8 +9,8 @@ publish = false
 
 [dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSEvent"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSDate", "NSRunLoop", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSButton", "NSCell", "NSClipView", "NSColor", "NSControl", "NSEvent", "NSFont", "NSGraphics", "NSImage", "NSPanel", "NSScreen", "NSScrollView", "NSSwitch", "NSText", "NSTextField", "NSTrackingArea", "NSView", "NSVisualEffectView", "NSWindow", "block2", "objc2-core-graphics"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSDate", "NSGeometry", "NSRunLoop", "NSString"] }
 tray-icon = "0.21"
 
 [profile.release]
