@@ -12,7 +12,7 @@ Claude Code, Codex, Cursor, language servers, `git`, `npm`, Docker builds: many 
 - **Kill switch**: with the firewall on, only the tunnel and your node's server can reach the internet. If the tunnel drops, traffic stops instead of leaking.
 - **DNS that doesn't leak**: lookups are answered over DoH through the tunnel; pf sends queries aimed at your router's DNS into the tunnel too.
 - **Direct list**: LAN ranges and domains you choose stay off the tunnel.
-- **Menu bar app**: start or stop the tunnel, toggle the firewall, test latency and speed, edit the node. Chinese and English follow your system language.
+- **Menu bar panel**: click the icon for a frosted panel instead of a menu. Status, latency and leak results stay live while it is open. Chinese and English follow your system language.
 - **Self-healing**: a root launchd supervisor restarts sing-box and rebuilds rules when Wi-Fi or Ethernet changes.
 - **Off by default**: installing changes nothing about your network until you start the tunnel.
 
@@ -45,7 +45,7 @@ macOS blocks the first open because the app is not notarized. Right-click the ap
 xattr -dr com.apple.quarantine tun4ai.app
 ```
 
-Then, in the menu bar menu, choose **Install**. The app downloads sing-box, checks its checksum and asks for your password once. Your network does not change.
+Then click the menu bar icon and choose **Install** in the panel. The app downloads sing-box, checks its checksum and asks for your password once. Your network does not change.
 
 1. **Edit VLESS node…**, paste your `vless://` link on its own line, save.
 2. **Start tunnel**.
