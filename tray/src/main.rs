@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask};
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode};
+#[cfg(test)]
 use tray_icon::menu::NativeIcon;
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
@@ -132,6 +133,7 @@ enum Dot {
 }
 
 impl Dot {
+    #[cfg(test)]
     fn icon(self) -> NativeIcon {
         match self {
             Dot::Green => NativeIcon::StatusAvailable,
@@ -142,28 +144,7 @@ impl Dot {
     }
 }
 
-fn labels() -> panel::Labels {
-    panel::Labels {
-        title: "tun4ai",
-        delay: tr("延迟", "Latency"),
-        icmp: "ICMP",
-        tcp: "TCPing",
-        real: tr("真实", "Real"),
-        speed: tr("速度", "Speed"),
-        test_delay: tr("测延迟", "Test latency"),
-        test_speed: tr("测速（最多 50MB）", "Test speed (up to 50 MB)"),
-        leaks: tr("泄露", "Leaks"),
-        leak_names: [tr("出口", "Exit"), "DNS", "WebRTC", "IPv6"],
-        test_leak: tr("检测泄露", "Check for leaks"),
-        browser: tr("在浏览器中检测…", "Check in browser…"),
-        tunnel: tr("隧道", "Tunnel"),
-        restart: tr("重启隧道", "Restart tunnel"),
-        firewall: tr("防火墙（断了就断网）", "Firewall (block internet if it drops)"),
-        edit_node: tr("编辑 VLESS 节点…", "Edit VLESS node…"),
-        edit_direct: tr("编辑直连名单…", "Edit direct list…"),
-        quit: tr("退出", "Quit"),
-    }
-}
+
 
 fn main() {
     let color = Icon::from_rgba(shield_rgba(ICON_SIZE, ON_RGB), ICON_SIZE, ICON_SIZE).expect("color icon");
@@ -193,7 +174,7 @@ fn main() {
         while let Ok(event) = TrayIconEvent::receiver().try_recv() {
             if let TrayIconEvent::Click { button, button_state, .. } = event {
                 if button == MouseButton::Left && button_state == MouseButtonState::Up {
-                    panel::toggle(mtm, &labels());
+                    panel::toggle(mtm);
                 }
             }
         }
@@ -520,6 +501,23 @@ mod tests {
     }
 
     #[test]
+    fn panel_headlines_follow_the_long_status() {
+        assert_eq!(panel_headline("正在开启隧道…"), "正在连接");
+        assert_eq!(panel_headline("正在关闭隧道…"), "正在断开");
+        assert_eq!(panel_headline("隧道已连接 · 防火墙开"), "隧道已连接");
+        assert_eq!(panel_headline("隧道断开 · 外网已切断"), "连接失败");
+        assert_eq!(panel_mark("正在重启隧道…"), "wait");
+        assert_eq!(panel_mark("隧道关 · 防火墙关，网络直连"), "off");
+        assert_eq!(panel_headline("Starting tunnel…"), "Connecting");
+        assert_eq!(panel_headline("Stopping tunnel…"), "Disconnecting");
+        assert_eq!(panel_headline("Tunnel up · firewall on"), "Tunnel connected");
+        assert_eq!(panel_headline("Tunnel down · internet blocked"), "Connection failed");
+        assert_eq!(panel_headline("Tunnel off · firewall off, direct"), "Tunnel off");
+        assert_eq!(panel_mark("Restarting tunnel…"), "wait");
+        assert_eq!(panel_mark("Tunnel down · internet blocked"), "fail");
+    }
+
+    #[test]
     fn english_titles_match_the_same_states() {
         assert_eq!(status_view(true, true, true, false, None, false).title, "Tunnel up · firewall on");
         assert_eq!(status_view(false, true, false, false, None, false).title, "Tunnel down · internet blocked");
@@ -622,15 +620,19 @@ fn panel_model(
     } else {
         tr("安装（下载 sing-box，需要管理员密码）", "Install (downloads sing-box, needs your password)")
     };
+    let tunnel_on = enabled && alive;
     panel::Model {
-        status: title.to_string(),
+        status: panel_headline(title),
+        subtitle: panel_subtitle(title, tunnel_on, firewall_off),
         status_tone: tone_of(dot),
+        mark: panel_mark(title).to_string(),
+        zh: zh(),
         icmp,
         tcp,
         real,
         speed,
         leaks,
-        tunnel: (if enabled && alive && !busy { tr("关闭隧道", "Stop tunnel") } else { tr("开启隧道", "Start tunnel") }).to_string(),
+        tunnel_on,
         tunnel_enabled: !busy && installed,
         restart_enabled: !busy && installed && (enabled || alive),
         firewall_on: !firewall_off,
@@ -641,6 +643,92 @@ fn panel_model(
         install: install.to_string(),
         install_enabled: !setup_busy,
         install_visible: true,
+    }
+}
+
+fn panel_headline(status: &str) -> String {
+    let en = status.starts_with("Tunnel")
+        || status.starts_with("Starting")
+        || status.starts_with("Stopping")
+        || status.starts_with("Restarting");
+    if status.starts_with("正在关闭") || status.starts_with("Stopping") {
+        return if en { "Disconnecting" } else { "正在断开" }.into();
+    }
+    if status.starts_with("正在") || status.starts_with("Starting") || status.starts_with("Restarting") {
+        return if en { "Connecting" } else { "正在连接" }.into();
+    }
+    if status.contains("已连接") || status.starts_with("Tunnel up") {
+        return if en { "Tunnel connected" } else { "隧道已连接" }.into();
+    }
+    if status.contains("断开") || status.starts_with("Tunnel down") {
+        return if en { "Connection failed" } else { "连接失败" }.into();
+    }
+    if en { "Tunnel off" } else { "隧道未连接" }.into()
+}
+
+fn panel_mark(status: &str) -> &'static str {
+    if status.starts_with("正在") || status.starts_with("Stopping") || status.starts_with("Starting") || status.starts_with("Restarting") {
+        "wait"
+    } else if status.contains("已连接") || status.starts_with("Tunnel up") {
+        "on"
+    } else if status.contains("断开") || status.starts_with("Tunnel down") {
+        "fail"
+    } else {
+        "off"
+    }
+}
+
+fn panel_subtitle(status: &str, tunnel_on: bool, firewall_off: bool) -> String {
+    if tunnel_on && firewall_off {
+        return tr("防火墙已关闭，断开后会漏网", "Firewall is off, a drop would leak").into();
+    }
+    if tunnel_on {
+        return format!("VLESS · {}", protected_for());
+    }
+    if let Some((_, rest)) = status.split_once('·') {
+        return rest.trim().to_string();
+    }
+    if firewall_off {
+        tr("网络直连", "Direct").into()
+    } else {
+        tr("外网已切断", "Internet blocked").into()
+    }
+}
+
+fn protected_for() -> String {
+    let Ok(meta) = fs::metadata(state("ENABLED")) else {
+        return tr("已保护", "protected").into();
+    };
+    let Ok(modified) = meta.modified() else {
+        return tr("已保护", "protected").into();
+    };
+    let secs = modified.elapsed().map(|d| d.as_secs()).unwrap_or(0);
+    if zh() {
+        if secs < 60 {
+            "已保护不到 1 分钟".into()
+        } else if secs < 3600 {
+            format!("已保护 {} 分钟", secs / 60)
+        } else {
+            let hours = secs / 3600;
+            let minutes = (secs % 3600) / 60;
+            if minutes == 0 {
+                format!("已保护 {hours} 小时")
+            } else {
+                format!("已保护 {hours}小时{minutes}分钟")
+            }
+        }
+    } else if secs < 60 {
+        "protected for under a minute".into()
+    } else if secs < 3600 {
+        format!("protected for {} min", secs / 60)
+    } else {
+        let hours = secs / 3600;
+        let minutes = (secs % 3600) / 60;
+        if minutes == 0 {
+            format!("protected for {hours} h")
+        } else {
+            format!("protected for {hours} h {minutes} min")
+        }
     }
 }
 
@@ -669,6 +757,7 @@ fn set_probe(update: impl FnOnce(&mut Probe)) {
     update(&mut PROBE.lock().unwrap());
 }
 
+#[cfg(test)]
 fn leak_row_view(index: usize, row: Option<&leak::Line>, busy: bool, zh: bool) -> (String, NativeIcon) {
     let pick = |zh_text: &'static str, en: &'static str| if zh { zh_text } else { en };
     let label = [
