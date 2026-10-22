@@ -38,6 +38,18 @@ install -m 644 "$ROOT/helper/render.py" "$OUT/Contents/Resources/helper/render.p
 install -m 644 "$ROOT/examples/vless.txt" "$OUT/Contents/Resources/examples/vless.txt"
 install -m 644 "$ROOT/examples/direct.txt" "$OUT/Contents/Resources/examples/direct.txt"
 install -m 755 "$ROOT/scripts/fetch-sing-box.sh" "$OUT/Contents/Resources/fetch-sing-box.sh"
+swift "$ROOT/scripts/render-icon.swift" "$OUT/AppIcon-1024.png"
+iconset="$OUT/AppIcon.iconset"
+mkdir -p "$iconset"
+for spec in "16:icon_16x16.png" "32:icon_16x16@2x.png" "32:icon_32x32.png" "64:icon_32x32@2x.png" \
+            "128:icon_128x128.png" "256:icon_128x128@2x.png" "256:icon_256x256.png" "512:icon_256x256@2x.png" \
+            "512:icon_512x512.png" "1024:icon_512x512@2x.png"; do
+  px="${spec%%:*}"
+  name="${spec#*:}"
+  sips -z "$px" "$px" "$OUT/AppIcon-1024.png" --out "$iconset/$name" >/dev/null
+done
+iconutil -c icns "$iconset" -o "$OUT/Contents/Resources/AppIcon.icns"
+rm -rf "$iconset" "$OUT/AppIcon-1024.png"
 cat >"$OUT/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -51,6 +63,8 @@ cat >"$OUT/Contents/Info.plist" <<EOF
   <string>tun4ai</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundleShortVersionString</key>
   <string>$version</string>
   <key>LSMinimumSystemVersion</key>
