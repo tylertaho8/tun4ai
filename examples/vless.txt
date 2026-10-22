@@ -1,8 +1,0 @@
-# tun4ai node: exactly one VLESS + Reality share link, on one line.
-# 节点：只写一行 VLESS + Reality 分享链接。
-#
-# Example / 示例:
-# vless://UUID@server.example.com:443?security=reality&pbk=PUBLIC_KEY&sid=SHORT_ID&sni=www.example.com&flow=xtls-rprx-vision
-#
-# After editing, choose "Restart tunnel" from the menu bar.
-# 改完在菜单栏选“重启隧道”。

@@ -15,7 +15,10 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+
+# Runs as root from a root-owned directory; leave that directory exactly as installed.
+sys.dont_write_bytecode = True
+import nodes  # noqa: E402
 
 TUN_IF = "utun15"
 TUN_NET = ipaddress.ip_network("192.168.165.0/24")
@@ -23,11 +26,8 @@ TUN_ADDR = "192.168.165.1/24"
 TUN_DNS = "192.168.165.2"
 MIXED_PORT = 17897
 MAX_USER_FILE = 64 * 1024
-LANG = "zh" if os.environ.get("TUN4AI_LANG", "").startswith("zh") else "en"
-
-
-def t(zh, en):
-    return zh if LANG == "zh" else en
+PROXY_TAG = "proxy"
+t = nodes.t
 
 
 # The config directory belongs to the user. A symlink there must not let root read
@@ -50,52 +50,44 @@ def read_user_file(path: Path, owner_uid=None):
         return handle.read().decode("utf-8", errors="replace")
 
 
-def load_node(path: Path, owner_uid=None):
+NODES_FILE = "nodes.txt"
+# The only file before nodes.txt existed. Same format; read only while nodes.txt is absent.
+LEGACY_NODES_FILE = "vless.txt"
+SELECTED_FILE = "selected.txt"
+
+
+def node_file(config_dir: Path):
+    """nodes.txt if it exists in any form (a symlink there must be refused, not skipped), else vless.txt."""
+    primary = config_dir / NODES_FILE
+    return primary if os.path.lexists(primary) else config_dir / LEGACY_NODES_FILE
+
+
+def load_nodes(config_dir: Path, owner_uid=None):
+    path = node_file(config_dir)
     text = read_user_file(path, owner_uid)
     if text is None:
-        sys.exit(t(f"缺少 {path.name}", f"{path.name} is missing"))
-    urls = [l.strip() for l in text.splitlines() if l.strip() and not l.strip().startswith("#")]
-    if len(urls) != 1:
-        sys.exit(t(f"{path.name} 里要有且只有一行节点", f"{path.name} must contain exactly one node line"))
+        sys.exit(t(f"缺少 {NODES_FILE}", f"{NODES_FILE} is missing"))
     try:
-        parsed = urlparse(urls[0])
-        port = parsed.port or 443
-    except ValueError:
-        sys.exit(t(f"{path.name} 里的节点地址格式不对", f"the node address in {path.name} is malformed"))
-    host = (parsed.hostname or "").lower()
-    query = parse_qs(parsed.query)
+        found = nodes.parse_nodes(text, path.name)
+    except nodes.LinkError as err:
+        sys.exit(str(err))
+    if not found:
+        sys.exit(t(f"{path.name} 里没有节点，每行写一个分享链接", f"{path.name} has no nodes; put one share link per line"))
+    return path, found
 
-    def one(name):
-        values = query.get(name) or []
-        return unquote(values[0]) if values else ""
 
-    sni = (one("sni") or host).lower()
-    if parsed.scheme != "vless" or not host or not parsed.username or not one("pbk") or not one("sid"):
-        sys.exit(t(
-            f"{path.name} 要写成 vless://UUID@地址:端口?pbk=公钥&sid=ShortID&sni=域名",
-            f"{path.name} must look like vless://UUID@host:port?pbk=KEY&sid=SHORTID&sni=DOMAIN",
-        ))
+def load_selected(config_dir: Path, found, owner_uid=None):
     try:
-        ipaddress.IPv4Address(host)
-        address_is_ip = True
-    except ipaddress.AddressValueError:
-        address_is_ip = False
-        if not re.fullmatch(r"[a-z0-9.-]+\.[a-z0-9-]+", host):
-            sys.exit(t(f"{path.name} 里的服务器地址不对", f"the server address in {path.name} is invalid"))
-    return {
-        "host": host,
-        "sni": sni,
-        "port": port,
-        "uuid": unquote(parsed.username),
-        "public_key": one("pbk"),
-        "short_id": one("sid"),
-        "flow": one("flow") or "xtls-rprx-vision",
-        "address_is_ip": address_is_ip,
-    }
+        return nodes.selected(found, read_user_file(config_dir / SELECTED_FILE, owner_uid))
+    except nodes.LinkError as err:
+        sys.exit(str(err))
 
 
 def load_direct(path: Path, owner_uid=None):
-    text = read_user_file(path, owner_uid)
+    return parse_direct(read_user_file(path, owner_uid), path.name)
+
+
+def parse_direct(text, filename="direct.txt"):
     nets = []
     domains = []
     for lineno, raw in enumerate((text or "").splitlines(), 1):
@@ -112,8 +104,8 @@ def load_direct(path: Path, owner_uid=None):
             domains.append(domain)
             continue
         sys.exit(t(
-            f"{path.name}:{lineno}: 不是 IP、网段或域名: {line}",
-            f"{path.name}:{lineno}: not an IP, network or domain: {line}",
+            f"{filename}:{lineno}: 不是 IP、网段或域名: {line}",
+            f"{filename}:{lineno}: not an IP, network or domain: {line}",
         ))
     return nets, domains
 
@@ -233,32 +225,14 @@ def config(node, direct, domains, lan_dns, iface, proxy_ips, with_tun, mixed_por
                 "server_port": 443,
                 "path": "/dns-query",
                 "tls": {"enabled": True, "server_name": "1.1.1.1"},
-                "detour": "vless-out",
+                "detour": PROXY_TAG,
             }],
             "rules": ([{"domain_suffix": domains, "server": "lan"}] if domains else []),
             "final": "remote",
             "strategy": "ipv4_only",
         },
         "inbounds": inbounds,
-        "outbounds": [{
-            "type": "vless",
-            "tag": "vless-out",
-            "server": proxy_ips[0],
-            "server_port": node["port"],
-            "uuid": node["uuid"],
-            "flow": node["flow"],
-            "bind_interface": iface,
-            "tls": {
-                "enabled": True,
-                "server_name": node["sni"],
-                "utls": {"enabled": True, "fingerprint": "chrome"},
-                "reality": {
-                    "enabled": True,
-                    "public_key": node["public_key"],
-                    "short_id": node["short_id"],
-                },
-            },
-        }, {
+        "outbounds": [nodes.outbound(node, proxy_ips[0], iface, PROXY_TAG), {
             "type": "direct",
             "tag": "direct",
             "bind_interface": iface,
@@ -267,7 +241,7 @@ def config(node, direct, domains, lan_dns, iface, proxy_ips, with_tun, mixed_por
             "auto_detect_interface": True,
             "default_domain_resolver": {"server": "remote", "strategy": "ipv4_only"},
             "rules": rules,
-            "final": "vless-out",
+            "final": PROXY_TAG,
         },
     }
 
@@ -293,11 +267,17 @@ block drop out quick on $ext_if inet6 proto {{ tcp, udp }} to any port 53
 """
 
 
-def proxy_pass(proxy_port):
-    return f"pass out quick inet proto tcp to <proxy4> port {proxy_port} flags any keep state"
+# The one hole for the tunnel itself: the selected node's IPs, its port, and only the protocol it speaks.
+# Hysteria2 and TUIC run over QUIC, so theirs is UDP; everything else is TCP.
+def proxy_pass(proxy_port, proxy_proto):
+    if proxy_proto == "tcp":
+        return f"pass out quick inet proto tcp to <proxy4> port {proxy_port} flags any keep state"
+    if proxy_proto == "udp":
+        return f"pass out quick inet proto udp to <proxy4> port {proxy_port} keep state"
+    raise ValueError(f"unknown proxy protocol: {proxy_proto}")
 
 
-def pf_text(iface, direct, lan_dns, proxy_ips, proxy_port):
+def pf_text(iface, direct, lan_dns, proxy_ips, proxy_port, proxy_proto):
     v4 = [str(net) for net in direct if net.version == 4]
     v6 = [str(net) for net in direct if net.version == 6]
     v4_table = "table <direct4> persist { " + ", ".join(v4) + " }" if v4 else ""
@@ -319,8 +299,8 @@ pass out quick inet6 to <direct6> keep state
 pass in quick inet6 from <direct6> to any keep state
 """.strip("\n")
     return f"""# Generated by render.py. Not loaded here.
-# One sing-box process owns both TUN and the VLESS outbound.
-# macOS pf cannot tie this hole to a program path, so it is only TCP to the server.
+# One sing-box process owns both TUN and the proxy outbound.
+# macOS pf cannot tie this hole to a program path, so it is only the selected node's IPs, port and protocol.
 ext_if = "{iface}"
 tun_if = "{TUN_IF}"
 lan_dns = "{lan_dns}"
@@ -344,7 +324,7 @@ block drop out quick proto tcp to any port {{ 3478, 5349, 19302 }}
 block drop out quick proto udp to any port {{ 3478, 5349, 19302 }}
 pass out quick inet proto udp from any port 68 to any port 67 keep state
 pass in quick inet proto udp from any port 67 to any port 68 keep state
-{proxy_pass(proxy_port)}
+{proxy_pass(proxy_port, proxy_proto)}
 pass out quick inet proto icmp to <proxy4> icmp-type echoreq keep state
 pass out quick inet proto icmp icmp-type {{ unreach, timex, paramprob }} keep state
 {v4_rules}
@@ -370,10 +350,47 @@ def write_json(path: Path, payload):
 def parse_args(argv):
     parser = argparse.ArgumentParser(description="Render tun4ai sing-box config and pf rules.")
     parser.add_argument("--if", dest="iface", required=True, help="physical interface, e.g. en0")
-    parser.add_argument("--config-dir", required=True, type=Path, help="holds vless.txt and direct.txt")
+    parser.add_argument("--config-dir", required=True, type=Path, help="holds nodes.txt (or legacy vless.txt), selected.txt and direct.txt")
     parser.add_argument("--state-dir", required=True, type=Path, help="where generated files go")
     parser.add_argument("--owner", help="user who must own the config files")
     return parser.parse_args(argv)
+
+
+# Non-secret summary of what the tunnel was built from, for the CLI and the tray.
+def active_node(item, proxy_ips):
+    return {**nodes.public(item, True), "server_ips": list(proxy_ips), "server_name": item["server_name"]}
+
+
+def render(iface, config_dir: Path, state: Path, owner_uid=None):
+    _, found = load_nodes(config_dir, owner_uid)
+    node = load_selected(config_dir, found, owner_uid)
+    direct, domains = load_direct(config_dir / "direct.txt", owner_uid)
+    run_dir = state / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    lan_dns = lan_dns_for(iface)
+    if node["address_is_ip"]:
+        proxy_ips, source = [node["host"]], t("地址", "literal")
+    else:
+        proxy_ips, source = resolve_proxy(lan_dns, node["host"], run_dir)
+    killswitch = pf_text(iface, direct, lan_dns, proxy_ips, node["port"], node["transport"])
+    dns_only = pf_dns_text(iface, lan_dns)
+    summary = json.dumps(active_node(node, proxy_ips), ensure_ascii=False, indent=2) + "\n"
+    # A structural leak would carry real credentials; a 4-letter password like "pass" would also
+    # match pf keywords, so only check strings long enough to mean something.
+    for item in found:
+        for secret in item["secrets"]:
+            if len(secret) >= 8 and secret in killswitch or secret in dns_only or secret in summary:
+                sys.exit(t("节点凭据出现在了公开文件里，没有写入配置", "a node credential leaked into a public file; nothing written"))
+    write_json(state / "config.json", config(node, direct, domains, lan_dns, iface, proxy_ips, True))
+    write_atomic(state / "pf.killswitch.conf", killswitch, 0o644)
+    write_atomic(state / "pf.dns.conf", dns_only, 0o644)
+    write_atomic(state / "active-node.json", summary, 0o644)
+    return t(
+        f"网卡 {iface}，局域网 DNS {lan_dns}，节点 {node['name']}（{node['protocol']}，{node['host']}:{node['port']}/{node['transport']}），"
+        f"服务器 IP {','.join(proxy_ips)}（{source}），直连 {len(direct)} 段 / {len(domains)} 个域名",
+        f"interface {iface}, LAN DNS {lan_dns}, node {node['name']} ({node['protocol']}, {node['host']}:{node['port']}/{node['transport']}), "
+        f"server IP {','.join(proxy_ips)} ({source}), direct {len(direct)} networks / {len(domains)} domains",
+    )
 
 
 def main(argv=None):
@@ -382,29 +399,7 @@ def main(argv=None):
     if not re.fullmatch(r"[A-Za-z0-9]+", iface):
         sys.exit(t(f"网卡名不对：{iface}", f"invalid interface name: {iface}"))
     owner_uid = pwd.getpwnam(args.owner).pw_uid if args.owner else None
-    node = load_node(args.config_dir / "vless.txt", owner_uid)
-    direct, domains = load_direct(args.config_dir / "direct.txt", owner_uid)
-    state = args.state_dir
-    run_dir = state / "run"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    lan_dns = lan_dns_for(iface)
-    if node["address_is_ip"]:
-        proxy_ips, source = [node["host"]], t("地址", "literal")
-    else:
-        proxy_ips, source = resolve_proxy(lan_dns, node["host"], run_dir)
-    killswitch = pf_text(iface, direct, lan_dns, proxy_ips, node["port"])
-    dns_only = pf_dns_text(iface, lan_dns)
-    if node["uuid"] in killswitch or node["uuid"] in dns_only:
-        sys.exit(t("节点标识出现在了防火墙规则里，没有写入配置", "the node UUID leaked into pf rules; nothing written"))
-    write_json(state / "config.json", config(node, direct, domains, lan_dns, iface, proxy_ips, True))
-    write_atomic(state / "pf.killswitch.conf", killswitch, 0o644)
-    write_atomic(state / "pf.dns.conf", dns_only, 0o644)
-    print(t(
-        f"网卡 {iface}，局域网 DNS {lan_dns}，节点 {node['sni']}:{node['port']}，"
-        f"服务器 IP {','.join(proxy_ips)}（{source}），直连 {len(direct)} 段 / {len(domains)} 个域名",
-        f"interface {iface}, LAN DNS {lan_dns}, node {node['sni']}:{node['port']}, "
-        f"server IP {','.join(proxy_ips)} ({source}), direct {len(direct)} networks / {len(domains)} domains",
-    ))
+    print(render(iface, args.config_dir, args.state_dir, owner_uid))
 
 
 if __name__ == "__main__":

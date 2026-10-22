@@ -37,8 +37,10 @@ xattr -dr com.apple.quarantine "$APP_DEST" 2>/dev/null || true
 t "3/4 准备配置目录 $CONFIG_DIR" "3/4 Preparing $CONFIG_DIR"
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
-if [ ! -f "$CONFIG_DIR/vless.txt" ]; then
-  install -m 600 "$ROOT/examples/vless.txt" "$CONFIG_DIR/vless.txt"
+# An existing vless.txt is the node list until the first `tun4ai node` edit renames it to nodes.txt.
+# A template nodes.txt next to it would hide it, so only a brand-new folder gets one.
+if [ ! -e "$CONFIG_DIR/nodes.txt" ] && [ ! -e "$CONFIG_DIR/vless.txt" ]; then
+  install -m 600 "$ROOT/examples/nodes.txt" "$CONFIG_DIR/nodes.txt"
 fi
 if [ ! -f "$CONFIG_DIR/direct.txt" ]; then
   install -m 644 "$ROOT/examples/direct.txt" "$CONFIG_DIR/direct.txt"
@@ -51,13 +53,13 @@ open "$APP_DEST"
 t "
 安装完成。隧道和防火墙目前都是关的，网络没有任何变化。
 下一步：
-  1. 菜单栏图标 → 编辑 VLESS 节点…，粘贴你的 vless:// 链接
+  1. 菜单栏图标 → 节点管理，每行粘贴一个分享链接（vless/vmess/trojan/ss/hysteria2/tuic）
   2. 菜单栏图标 → 开启隧道
   3. 确认能上网后，再勾选「防火墙」
 卸载：./uninstall.sh" "
 Installed. The tunnel and the firewall are both off; nothing about your network has changed.
 Next:
-  1. Menu bar icon → Edit VLESS node…, paste your vless:// link
+  1. Menu bar icon → Node, paste one share link per line (vless/vmess/trojan/ss/hysteria2/tuic)
   2. Menu bar icon → Start tunnel
   3. Once it works, tick \"Firewall\"
 Uninstall: ./uninstall.sh"

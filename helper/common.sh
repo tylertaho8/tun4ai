@@ -2,7 +2,7 @@
 # SC2034: the variables below are used by the scripts that source this file.
 # Sourced by every root helper. Paths live here and in env, nowhere else.
 # Everything this file points at is root-owned; the only user-owned input is CONFIG_DIR,
-# which render.py reads but never executes.
+# which render.py reads but never executes. render.py imports only nodes.py from this folder.
 
 HELPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ ! -f "$HELPER_DIR/env" ]; then
@@ -49,7 +49,8 @@ result() {
 }
 
 render_config() {
-  "$PYTHON" "$RENDER" --if "$1" --config-dir "$CONFIG_DIR" --state-dir "$STATE_DIR" --owner "$OWNER"
+  # -E -s: no PYTHON* variables and no user site-packages decide what root imports.
+  "$PYTHON" -E -s "$RENDER" --if "$1" --config-dir "$CONFIG_DIR" --state-dir "$STATE_DIR" --owner "$OWNER"
 }
 
 default_iface() {

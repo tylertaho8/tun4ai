@@ -35,7 +35,8 @@ for f in supervise.sh enable.sh disable.sh firewall-on.sh firewall-off.sh panic-
 done
 install -m 644 "$ROOT/helper/common.sh" "$OUT/Contents/Resources/helper/common.sh"
 install -m 644 "$ROOT/helper/render.py" "$OUT/Contents/Resources/helper/render.py"
-install -m 644 "$ROOT/examples/vless.txt" "$OUT/Contents/Resources/examples/vless.txt"
+install -m 644 "$ROOT/helper/nodes.py" "$OUT/Contents/Resources/helper/nodes.py"
+install -m 644 "$ROOT/examples/nodes.txt" "$OUT/Contents/Resources/examples/nodes.txt"
 install -m 644 "$ROOT/examples/direct.txt" "$OUT/Contents/Resources/examples/direct.txt"
 install -m 755 "$ROOT/scripts/fetch-sing-box.sh" "$OUT/Contents/Resources/fetch-sing-box.sh"
 swift "$ROOT/scripts/render-icon.swift" "$OUT/AppIcon-1024.png"
