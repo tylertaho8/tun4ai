@@ -7,8 +7,8 @@
 # - A domain covers its subdomains: example.com also matches git.example.com.
 #   Domains here are resolved by your LAN DNS.
 #   域名包含子域名，用局域网 DNS 解析。
-# - With the firewall on, only TCP and ICMP pass to these addresses; UDP is dropped.
-#   防火墙开着时，这些地址只放行 TCP 和 ICMP，UDP 丢掉。
+# - With the firewall on, every protocol passes to these addresses.
+#   防火墙开着时，这些地址所有协议都放行。
 # - A public address here exposes your real IP to that site.
 #   写公网地址，对方会看到你的真实出口 IP。
 # - The proxy server itself is excluded automatically.
