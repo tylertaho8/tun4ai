@@ -147,8 +147,8 @@ impl Dot {
 
 
 fn main() {
-    let color = Icon::from_rgba(shield_rgba(ICON_SIZE, ON_RGB), ICON_SIZE, ICON_SIZE).expect("color icon");
-    let gray = Icon::from_rgba(shield_rgba(ICON_SIZE, OFF_RGB), ICON_SIZE, ICON_SIZE).expect("gray icon");
+    let color = Icon::from_rgba(mark_rgba(ICON_SIZE, ON_RGB, true), ICON_SIZE, ICON_SIZE).expect("color icon");
+    let gray = Icon::from_rgba(mark_rgba(ICON_SIZE, OFF_RGB, false), ICON_SIZE, ICON_SIZE).expect("gray icon");
     let tray = TrayIconBuilder::new()
         .with_icon(gray.clone())
         .with_icon_as_template(false)
@@ -414,50 +414,105 @@ fn status_view(
     }
 }
 
-// A shield with a tunnel arch cut out, drawn here so the repo ships no image assets.
-fn shield_rgba(size: u32, rgb: [u8; 3]) -> Vec<u8> {
+// Menu-bar copy of the app icon: a rounded tile, a white tunnel arch, and a
+// light in the opening. y grows downward. `lit` is the tunnel-up state.
+fn mark_rgba(size: u32, tile: [u8; 3], lit: bool) -> Vec<u8> {
     const SAMPLES: u32 = 4;
+    let n = (SAMPLES * SAMPLES) as u32;
     let mut out = vec![0u8; (size * size * 4) as usize];
     for py in 0..size {
         for px in 0..size {
-            let mut hits = 0;
+            let mut pr = 0u32;
+            let mut pg = 0u32;
+            let mut pb = 0u32;
+            let mut pa = 0u32;
             for sy in 0..SAMPLES {
                 for sx in 0..SAMPLES {
                     let x = (px as f64 + (sx as f64 + 0.5) / SAMPLES as f64) / size as f64;
                     let y = (py as f64 + (sy as f64 + 0.5) / SAMPLES as f64) / size as f64;
-                    if in_shield(x, y) && !in_tunnel(x, y) {
-                        hits += 1;
-                    }
+                    let [r, g, b, a] = mark_sample(x, y, tile, lit);
+                    pr += r as u32 * a as u32;
+                    pg += g as u32 * a as u32;
+                    pb += b as u32 * a as u32;
+                    pa += a as u32;
                 }
             }
             let i = ((py * size + px) * 4) as usize;
-            out[i..i + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], (hits * 255 / (SAMPLES * SAMPLES)) as u8]);
+            if pa == 0 {
+                out[i..i + 4].copy_from_slice(&[0, 0, 0, 0]);
+            } else {
+                out[i..i + 4].copy_from_slice(&[
+                    (pr / pa) as u8,
+                    (pg / pa) as u8,
+                    (pb / pa) as u8,
+                    (pa / n) as u8,
+                ]);
+            }
         }
     }
     out
 }
 
-fn in_shield(x: f64, y: f64) -> bool {
-    let (top, waist, tip, half, corner) = (0.08, 0.55, 0.94, 0.40, 0.10);
-    let dx = (x - 0.5).abs();
-    if !(top..=tip).contains(&y) {
-        return false;
+fn mark_sample(x: f64, y: f64, tile: [u8; 3], lit: bool) -> [u8; 4] {
+    if in_disc(x, y, 0.50, 0.60, 0.045) {
+        return if lit { [255, 219, 115, 255] } else { [226, 226, 226, 255] };
     }
-    if y <= waist {
-        if y < top + corner && dx > half - corner {
-            let (cx, cy) = (half - corner, top + corner);
-            return (dx - cx).powi(2) + (y - cy).powi(2) <= corner * corner;
-        }
-        return dx <= half;
+    if in_arch(x, y) {
+        return [255, 255, 255, 255];
     }
-    let k = (y - waist) / (tip - waist);
-    dx <= half * (1.0 - k * k).sqrt()
+    if in_tile(x, y) {
+        return [tile[0], tile[1], tile[2], 255];
+    }
+    [0, 0, 0, 0]
 }
 
-fn in_tunnel(x: f64, y: f64) -> bool {
-    let (spring, floor, r) = (0.45, 0.74, 0.15);
+fn in_tile(x: f64, y: f64) -> bool {
+    let inset = 0.04;
+    let radius = 0.22;
+    let (x0, y0, x1, y1) = (inset, inset, 1.0 - inset, 1.0 - inset);
+    if !(x0..=x1).contains(&x) || !(y0..=y1).contains(&y) {
+        return false;
+    }
+    let cx = if x < x0 + radius {
+        x0 + radius
+    } else if x > x1 - radius {
+        x1 - radius
+    } else {
+        x
+    };
+    let cy = if y < y0 + radius {
+        y0 + radius
+    } else if y > y1 - radius {
+        y1 - radius
+    } else {
+        y
+    };
+    let dx = x - cx;
+    let dy = y - cy;
+    dx * dx + dy * dy <= radius * radius
+}
+
+fn in_arch(x: f64, y: f64) -> bool {
+    let spring = 0.44;
+    let floor = 0.82;
+    let outer = 0.34;
+    let inner = 0.17;
     let dx = (x - 0.5).abs();
-    ((spring..=floor).contains(&y) && dx <= r) || (y < spring && dx * dx + (y - spring).powi(2) <= r * r)
+    if (spring..=floor).contains(&y) {
+        return dx >= inner && dx <= outer;
+    }
+    if y < spring {
+        let dy = spring - y;
+        let r = (dx * dx + dy * dy).sqrt();
+        return r >= inner && r <= outer;
+    }
+    false
+}
+
+fn in_disc(x: f64, y: f64, cx: f64, cy: f64, r: f64) -> bool {
+    let dx = x - cx;
+    let dy = y - cy;
+    dx * dx + dy * dy <= r * r
 }
 
 #[cfg(test)]
@@ -575,15 +630,23 @@ mod tests {
     }
 
     #[test]
-    fn icon_is_a_shield_with_a_see_through_tunnel() {
+    fn icon_matches_the_app_mark() {
         let size = ICON_SIZE as usize;
-        let px = shield_rgba(ICON_SIZE, ON_RGB);
-        let alpha = |x: usize, y: usize| px[(y * size + x) * 4 + 3];
+        let px = mark_rgba(ICON_SIZE, ON_RGB, true);
+        let at = |x: usize, y: usize| {
+            let i = (y * size + x) * 4;
+            (px[i], px[i + 1], px[i + 2], px[i + 3])
+        };
         assert_eq!(px.len(), size * size * 4);
-        assert_eq!(alpha(0, 0), 0, "corner is transparent");
-        assert_eq!(alpha(size / 2, size * 65 / 100), 0, "tunnel is cut out");
-        assert_eq!(alpha(size / 5, size * 40 / 100), 255, "shield body is solid");
-        assert_eq!(alpha(size / 2, size * 85 / 100), 255, "below the tunnel is solid");
+        assert_eq!(at(0, 0).3, 0, "corner is transparent");
+        let crown = at(size / 2, size * 18 / 100);
+        assert!(crown.0 > 240 && crown.3 == 255, "crown of the arch is white");
+        let opening = at(size / 2, size * 70 / 100);
+        assert_eq!(&opening.0, &ON_RGB[0], "opening shows the green tile");
+        let leg = at(size * 76 / 100, size * 65 / 100);
+        assert!(leg.0 > 240 && leg.3 == 255, "a leg of the arch is white");
+        let light = at(size / 2, size * 60 / 100);
+        assert!(light.0 > 240 && light.2 < 160, "the light is yellow");
     }
 }
 
