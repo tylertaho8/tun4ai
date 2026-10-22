@@ -54,12 +54,14 @@ t "
 安装完成。隧道和防火墙目前都是关的，网络没有任何变化。
 下一步：
   1. 菜单栏图标 → 节点管理，每行粘贴一个分享链接（vless/vmess/trojan/ss/hysteria2/tuic）
+     或者：/Library/PrivilegedHelperTools/tun4ai/tun4ai node add '<分享链接>'
   2. 菜单栏图标 → 开启隧道
   3. 确认能上网后，再勾选「防火墙」
 卸载：./uninstall.sh" "
 Installed. The tunnel and the firewall are both off; nothing about your network has changed.
 Next:
   1. Menu bar icon → Node, paste one share link per line (vless/vmess/trojan/ss/hysteria2/tuic)
+     or: /Library/PrivilegedHelperTools/tun4ai/tun4ai node add '<share link>'
   2. Menu bar icon → Start tunnel
   3. Once it works, tick \"Firewall\"
 Uninstall: ./uninstall.sh"

@@ -57,11 +57,16 @@ check "no personal home path in shipped files" \
   "! grep -rIl '/Users/' '$ROOT/helper' '$ROOT/scripts' '$ROOT/tray/src' '$ROOT/install.sh' '$ROOT/uninstall.sh' '$ROOT/examples'"
 
 bash "$ROOT/helper/install-root.sh" "$(id -un)" "$CONFIG" "$box" zh >/dev/null
-for f in common.sh supervise.sh render.py nodes.py enable.sh disable.sh firewall-on.sh firewall-off.sh panic-open.sh uninstall-root.sh env bin/sing-box; do
+for f in common.sh supervise.sh render.py nodes.py tun4ai enable.sh disable.sh firewall-on.sh firewall-off.sh panic-open.sh uninstall-root.sh env bin/sing-box; do
   check "installed $f" "[ -f '$HELPER/$f' ]"
 done
 check "scripts are executable, libraries are not" \
-  "[ -x '$HELPER/supervise.sh' ] && [ ! -x '$HELPER/common.sh' ] && [ ! -x '$HELPER/nodes.py' ]"
+  "[ -x '$HELPER/supervise.sh' ] && [ -x '$HELPER/tun4ai' ] && [ ! -x '$HELPER/common.sh' ] && [ ! -x '$HELPER/nodes.py' ]"
+# shellcheck disable=SC2034  # read inside check's eval
+listed="$(TUN4AI_CONFIG_DIR="$CONFIG" TUN4AI_STATE_DIR="$STATE" TUN4AI_HELPER_DIR="$HELPER" "$HELPER/tun4ai" node list --json)"
+check "installed CLI finds its modules and reads the legacy vless.txt" \
+  "[[ \"\$listed\" == *'\"file\": \"vless.txt\"'* ]] && [[ \"\$listed\" == *'\"protocol\": \"vless\"'* ]]"
+check "installed CLI does not leave bytecode in the root folder" "[ ! -e '$HELPER/__pycache__' ]"
 check "fresh install leaves tunnel and firewall off" "[ -f '$STATE/DISABLED' ] && [ -f '$STATE/FIREWALL_OFF' ]"
 
 # shellcheck source=/dev/null

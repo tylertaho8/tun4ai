@@ -39,4 +39,5 @@ jobs:
           test -f build/tun4ai.app/Contents/Resources/helper/install-root.sh
           test -f build/tun4ai.app/Contents/Resources/examples/nodes.txt
           test -f build/tun4ai.app/Contents/Resources/helper/nodes.py
+          test -x build/tun4ai.app/Contents/Resources/helper/tun4ai
           test -f build/tun4ai.app/Contents/Resources/examples/direct.txt
