@@ -5,6 +5,13 @@ use std::process::Command;
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let src = manifest.join("panel-swift").join("Panel.swift");
+    println!("cargo:rerun-if-env-changed=TUN4AI_SKIP_PANEL");
+    // Only for type-checking the Rust side from a machine without swiftc (e.g. Linux with
+    // --target x86_64-apple-darwin). Opt-in, so a real build never ships without the panel.
+    if env::var_os("TUN4AI_SKIP_PANEL").is_some() {
+        println!("cargo:warning=TUN4AI_SKIP_PANEL is set: the SwiftUI panel was not built");
+        return;
+    }
     let dest_dir = artifact_dir();
     std::fs::create_dir_all(&dest_dir).expect("create target dir");
     let dest = dest_dir.join("Tun4aiPanel");

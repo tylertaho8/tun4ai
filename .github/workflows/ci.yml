@@ -14,23 +14,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: shellcheck
-        run: |
-          brew install shellcheck
-          shellcheck -x install.sh uninstall.sh helper/*.sh scripts/*.sh tests/*.sh
+      - name: tools
+        run: brew install shellcheck
 
-      - name: fetch sing-box
-        run: ./scripts/fetch-sing-box.sh build
-
-      - name: render tests
-        run: /usr/bin/python3 -m unittest discover -s tests -v
-
-      - name: staged install
-        run: bash tests/test_install.sh
-
-      - name: tray tests
-        working-directory: tray
-        run: cargo test --locked
+      # Same entry point as on a dev machine: shellcheck, render/CLI tests, staged install, tray tests.
+      - name: make check
+        run: make check
 
       - name: bundle app
         run: |
