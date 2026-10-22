@@ -17,6 +17,28 @@ ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1" >&2; fails=$((fails + 1)); }
 check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
+# Off macOS, stand in for the two Apple tools install-root.sh calls. The plutil shim parses the plist
+# with Python's plistlib, so a malformed plist still fails; visudo is the real one from sudo.
+if [ "$(uname -s)" != Darwin ]; then
+  mkdir -p "$tmp/shims"
+  cat >"$tmp/shims/plutil" <<'SHIM'
+#!/usr/bin/python3
+import plistlib, sys
+args = sys.argv[1:]
+with open(args[-1], "rb") as f:
+    data = plistlib.load(f)
+if args[0] == "-extract":
+    for key in args[1].split("."):
+        data = data[int(key)] if isinstance(data, list) else data[key]
+    print(data)
+SHIM
+  chmod 755 "$tmp/shims/plutil"
+  export PATH="$tmp/shims:$PATH:/usr/sbin:/sbin"
+fi
+mode_of() {
+  if [ "$(uname -s)" = Darwin ]; then stat -f %Lp "$1"; else stat -c %a "$1"; fi
+}
+
 box="${SING_BOX:-$ROOT/build/sing-box}"
 if [ ! -x "$box" ]; then
   box="$tmp/fake-sing-box"
@@ -35,10 +57,11 @@ check "no personal home path in shipped files" \
   "! grep -rIl '/Users/' '$ROOT/helper' '$ROOT/scripts' '$ROOT/tray/src' '$ROOT/install.sh' '$ROOT/uninstall.sh' '$ROOT/examples'"
 
 bash "$ROOT/helper/install-root.sh" "$(id -un)" "$CONFIG" "$box" zh >/dev/null
-for f in common.sh supervise.sh render.py enable.sh disable.sh firewall-on.sh firewall-off.sh panic-open.sh uninstall-root.sh env bin/sing-box; do
+for f in common.sh supervise.sh render.py nodes.py enable.sh disable.sh firewall-on.sh firewall-off.sh panic-open.sh uninstall-root.sh env bin/sing-box; do
   check "installed $f" "[ -f '$HELPER/$f' ]"
 done
-check "scripts are executable, libraries are not" "[ -x '$HELPER/supervise.sh' ] && [ ! -x '$HELPER/common.sh' ]"
+check "scripts are executable, libraries are not" \
+  "[ -x '$HELPER/supervise.sh' ] && [ ! -x '$HELPER/common.sh' ] && [ ! -x '$HELPER/nodes.py' ]"
 check "fresh install leaves tunnel and firewall off" "[ -f '$STATE/DISABLED' ] && [ -f '$STATE/FIREWALL_OFF' ]"
 
 # shellcheck source=/dev/null
@@ -50,7 +73,7 @@ fi
 
 check "sudoers grants exactly the four tray actions" "[ \"\$(wc -l <'$SUDOERS' | tr -d ' ')\" = 4 ] && ! grep -v 'NOPASSWD: $HELPER/' '$SUDOERS' >/dev/null"
 check "sudoers parses" "visudo -cf '$SUDOERS' >/dev/null 2>&1"
-check "sudoers is 0440" "[ \"\$(stat -f %Lp '$SUDOERS')\" = 440 ]"
+check "sudoers is 0440" "[ \"\$(mode_of '$SUDOERS')\" = 440 ]"
 check "launchd plist is valid" "plutil -lint '$PLIST' >/dev/null"
 check "launchd runs the installed supervisor" \
   "[ \"\$(plutil -extract ProgramArguments.1 raw '$PLIST')\" = '$HELPER/supervise.sh' ]"
@@ -60,7 +83,7 @@ check "helper refuses to run without root" "! bash '$HELPER/enable.sh' 2>/dev/nu
 refusal="$(bash "$HELPER/enable.sh" 2>&1 || true)"
 check "refusal speaks the installed language" "[[ \"\$refusal\" == *管理员* ]]"
 
-iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')"
+iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2}' || true)"
 if [ -n "$iface" ]; then
   # shellcheck disable=SC2016
   check "installed render writes into the state dir" \
