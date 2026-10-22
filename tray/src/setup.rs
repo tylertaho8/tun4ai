@@ -27,7 +27,7 @@ pub fn bundle(resources: &Path) -> Option<Bundle> {
     };
     let ready = bundled.fetch.is_file()
         && bundled.install_root.is_file()
-        && bundled.examples.join("vless.txt").is_file()
+        && bundled.examples.join("nodes.txt").is_file()
         && bundled.examples.join("direct.txt").is_file();
     ready.then_some(bundled)
 }
@@ -59,14 +59,19 @@ fn apple_escape(text: &str) -> String {
 }
 
 // Creates the config dir and copies the examples once. Existing files stay as the user left them.
+// An old vless.txt is still the node list until the CLI renames it, and a template nodes.txt
+// beside it would take precedence, so it only gets one when there is no node file at all.
 pub fn prepare_config(examples: &Path, config_dir: &Path) -> io::Result<()> {
     fs::create_dir_all(config_dir)?;
     let mut dir = fs::metadata(config_dir)?.permissions();
     dir.set_mode(0o700);
     fs::set_permissions(config_dir, dir)?;
-    for (name, mode) in [("vless.txt", 0o600), ("direct.txt", 0o644)] {
+    for (name, mode) in [("nodes.txt", 0o600), ("direct.txt", 0o644)] {
         let dest = config_dir.join(name);
-        if dest.exists() {
+        if dest.symlink_metadata().is_ok() {
+            continue;
+        }
+        if name == "nodes.txt" && config_dir.join("vless.txt").symlink_metadata().is_ok() {
             continue;
         }
         fs::copy(examples.join(name), &dest)?;
@@ -110,17 +115,34 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let examples = root.join("examples");
         fs::create_dir_all(&examples).unwrap();
-        fs::write(examples.join("vless.txt"), "example-node\n").unwrap();
+        fs::write(examples.join("nodes.txt"), "example-node\n").unwrap();
         fs::write(examples.join("direct.txt"), "10.0.0.0/8\n").unwrap();
         let config = root.join("config dir");
         prepare_config(&examples, &config).unwrap();
         assert_eq!(fs::metadata(&config).unwrap().permissions().mode() & 0o777, 0o700);
-        assert_eq!(fs::metadata(config.join("vless.txt")).unwrap().permissions().mode() & 0o777, 0o600);
-        fs::write(config.join("vless.txt"), "mine\n").unwrap();
-        fs::write(examples.join("vless.txt"), "changed\n").unwrap();
+        assert_eq!(fs::metadata(config.join("nodes.txt")).unwrap().permissions().mode() & 0o777, 0o600);
+        fs::write(config.join("nodes.txt"), "mine\n").unwrap();
+        fs::write(examples.join("nodes.txt"), "changed\n").unwrap();
         prepare_config(&examples, &config).unwrap();
-        assert_eq!(fs::read_to_string(config.join("vless.txt")).unwrap(), "mine\n");
+        assert_eq!(fs::read_to_string(config.join("nodes.txt")).unwrap(), "mine\n");
         assert_eq!(fs::read_to_string(config.join("direct.txt")).unwrap(), "10.0.0.0/8\n");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn prepare_config_does_not_hide_an_old_vless_txt_behind_a_template() {
+        let root = std::env::temp_dir().join(format!("tun4ai-setup-legacy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let examples = root.join("examples");
+        fs::create_dir_all(&examples).unwrap();
+        fs::write(examples.join("nodes.txt"), "# template\n").unwrap();
+        fs::write(examples.join("direct.txt"), "10.0.0.0/8\n").unwrap();
+        let config = root.join("config");
+        fs::create_dir_all(&config).unwrap();
+        fs::write(config.join("vless.txt"), "vless://old\n").unwrap();
+        prepare_config(&examples, &config).unwrap();
+        assert!(!config.join("nodes.txt").exists());
+        assert_eq!(fs::read_to_string(config.join("vless.txt")).unwrap(), "vless://old\n");
         let _ = fs::remove_dir_all(&root);
     }
 }

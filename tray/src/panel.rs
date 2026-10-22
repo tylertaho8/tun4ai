@@ -20,6 +20,7 @@ pub enum Action {
     Firewall(bool),
     EditNode,
     EditDirect,
+    UseNode(String),
     Install,
     Quit,
 }
@@ -35,6 +36,12 @@ pub enum Tone {
 pub struct Line {
     pub text: String,
     pub tone: Tone,
+}
+
+pub struct NodeLine {
+    pub name: String,
+    pub detail: String,
+    pub selected: bool,
 }
 
 pub struct Model {
@@ -59,6 +66,9 @@ pub struct Model {
     pub install: String,
     pub install_enabled: bool,
     pub install_visible: bool,
+    pub nodes: Vec<NodeLine>,
+    pub node_error: String,
+    pub node_switch_enabled: bool,
 }
 
 static OPEN: AtomicBool = AtomicBool::new(false);
@@ -190,7 +200,11 @@ fn read_actions(stdout: impl std::io::Read) {
             "direct" => push(Action::EditDirect),
             "install" => push(Action::Install),
             "quit" => push(Action::Quit),
-            _ => {}
+            other => {
+                if let Some(name) = other.strip_prefix("use ") {
+                    push(Action::UseNode(name.to_string()));
+                }
+            }
         }
     }
     if let Ok(mut bridge) = BRIDGE.lock() {
@@ -243,11 +257,24 @@ fn state_line(model: &Model) -> String {
         .iter()
         .map(|line| format!(r#"{{"text":{},"tone":"{}"}}"#, json_string(&line.text), tone_name(line.tone)))
         .collect();
+    let nodes: Vec<String> = model
+        .nodes
+        .iter()
+        .map(|node| {
+            format!(
+                r#"{{"name":{},"detail":{},"selected":{}}}"#,
+                json_string(&node.name),
+                json_string(&node.detail),
+                node.selected
+            )
+        })
+        .collect();
     format!(
         concat!(
             r#"{{"op":"state","title":{},"subtitle":{},"tone":"{}","mark":"{}","zh":{},"icmp":{},"tcp":{},"real":{},"speed":{},"#,
             r#""firewall":{},"tunnelOn":{},"busy":{},"delayOn":{},"speedOn":{},"restartOn":{},"firewallEnabled":{},"#,
-            r#""leakOn":{},"install":{},"installOn":{},"installShow":{},"leaks":[{}]}}"#
+            r#""leakOn":{},"install":{},"installOn":{},"installShow":{},"leaks":[{}],"#,
+            r#""nodes":[{}],"nodeError":{},"nodeSwitchOn":{}}}"#
         ),
         json_string(&model.status),
         json_string(&model.subtitle),
@@ -269,7 +296,10 @@ fn state_line(model: &Model) -> String {
         json_string(&model.install),
         model.install_enabled,
         model.install_visible,
-        leaks.join(",")
+        leaks.join(","),
+        nodes.join(","),
+        json_string(&model.node_error),
+        model.node_switch_enabled
     )
 }
 
@@ -305,6 +335,19 @@ mod tests {
         assert!(line.starts_with(r#"{"op":"state""#));
     }
 
+    #[test]
+    fn node_names_are_escaped_and_the_switch_state_is_sent() {
+        let mut model = sample();
+        model.nodes = vec![
+            NodeLine { name: "东京 \"a\"".into(), detail: "VLESS · 203.0.113.7:443".into(), selected: true },
+            NodeLine { name: "hy2".into(), detail: "Hysteria2 · hy.example.com:8443 · UDP".into(), selected: false },
+        ];
+        let line = state_line(&model);
+        assert!(line.contains(r#""nodes":[{"name":"东京 \"a\"","detail":"VLESS · 203.0.113.7:443","selected":true},{"name":"hy2""#));
+        assert!(line.contains(r#""nodeSwitchOn":true"#));
+        assert!(line.ends_with('}'));
+    }
+
     fn sample() -> Model {
         Model {
             status: "Tunnel connected".into(),
@@ -333,6 +376,9 @@ mod tests {
             install: String::new(),
             install_enabled: false,
             install_visible: true,
+            nodes: Vec::new(),
+            node_error: String::new(),
+            node_switch_enabled: true,
         }
     }
 }

@@ -1,0 +1,21 @@
+# tun4ai nodes: one share link per line. "#" starts a comment.
+# 节点：一行一个分享链接，# 开头是注释。
+#
+# The text after "#" at the end of a link is the node's name; names must be unique.
+# 链接末尾 # 后面是节点名，名字不能重复。
+#
+# The tunnel uses the node named in selected.txt, or the first one if there is none.
+# Switch with the menu bar panel or: tun4ai node use <name or number>
+# 隧道使用 selected.txt 里写的节点，没有就用第一个。用面板或 tun4ai node use 切换。
+#
+# Supported / 支持的格式:
+# vless://UUID@host:443?security=reality&pbk=PUBLIC_KEY&sid=SHORT_ID&sni=www.example.com&flow=xtls-rprx-vision#reality
+# vless://UUID@host:443?security=tls&type=ws&host=cdn.example.com&path=%2Fws#vless-ws
+# vmess://BASE64_JSON                        (v2rayN format; tcp, ws, httpupgrade, grpc)
+# trojan://PASSWORD@host:443?sni=host#trojan
+# ss://BASE64(METHOD:PASSWORD)@host:8388#ss  (AEAD and 2022 ciphers, no plugins)
+# hysteria2://PASSWORD@host:443?sni=host#hy2 (also hy2://; UDP)
+# tuic://UUID:PASSWORD@host:443?congestion_control=bbr&alpn=h3#tuic   (UDP)
+#
+# After editing, choose "Reconnect" in the menu bar panel.
+# 改完在菜单栏面板点“重连隧道”。

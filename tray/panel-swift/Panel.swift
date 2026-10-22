@@ -8,6 +8,14 @@ private let panelRadius: CGFloat = 14
 enum PanelTab {
     case delay
     case leak
+    case nodes
+}
+
+struct NodeRow: Identifiable, Equatable {
+    let id: Int
+    var name: String
+    var detail: String
+    var selected: Bool
 }
 
 struct LeakLine: Identifiable, Equatable {
@@ -32,6 +40,9 @@ final class PanelModel: ObservableObject {
     @Published var restartOn = true
     @Published var leakOn = true
     @Published var leaks: [LeakLine] = []
+    @Published var nodes: [NodeRow] = []
+    @Published var nodeError = ""
+    @Published var nodeSwitchOn = true
     @Published var install = ""
     @Published var installOn = false
     @Published var installShow = false
@@ -69,6 +80,21 @@ final class PanelModel: ObservableObject {
         installShow = bool(obj, "installShow") ?? installShow
         zh = bool(obj, "zh") ?? zh
         mark = string(obj, "mark") ?? mark
+        nodeError = string(obj, "nodeError") ?? nodeError
+        nodeSwitchOn = bool(obj, "nodeSwitchOn") ?? nodeSwitchOn
+        if let rows = obj["nodes"] as? [[String: Any]] {
+            let next = rows.enumerated().map { index, row in
+                NodeRow(
+                    id: index,
+                    name: row["name"] as? String ?? "",
+                    detail: row["detail"] as? String ?? "",
+                    selected: row["selected"] as? Bool ?? false
+                )
+            }
+            if next != nodes {
+                nodes = next
+            }
+        }
         if let rows = obj["leaks"] as? [[String: Any]] {
             leaks = rows.enumerated().map { index, row in
                 LeakLine(
@@ -215,15 +241,15 @@ struct PanelRoot: View {
         VStack(alignment: .leading, spacing: 8) {
             header
             tabSwitch
-            if model.tab == .delay {
+            switch model.tab {
+            case .delay:
                 delayCard
-            } else {
-                leakCard
-            }
-            if model.tab == .delay {
                 delayButtons
-            } else {
+            case .leak:
+                leakCard
                 leakButtons
+            case .nodes:
+                nodesCard
             }
             controls
         }
@@ -272,6 +298,7 @@ struct PanelRoot: View {
         HStack(spacing: 2) {
             tabButton(model.t("延迟", "Latency"), .delay)
             tabButton(model.t("泄露", "Leaks"), .leak)
+            tabButton(model.t("节点", "Nodes"), .nodes)
         }
         .padding(2)
         .background {
@@ -357,6 +384,34 @@ extension PanelRoot {
             }
         }
         .zIndex(1)
+    }
+
+    // One row per node; tapping one selects it and, if the tunnel is up, reconnects through it.
+    private var nodesCard: some View {
+        card {
+            if model.nodes.isEmpty {
+                Text(model.nodeError.isEmpty
+                    ? model.t("还没有节点。点下方「节点管理」，每行粘贴一个分享链接。", "No nodes yet. Choose Node below and paste one share link per line.")
+                    : model.nodeError)
+                    .font(.system(size: 12))
+                    .foregroundStyle(model.nodeError.isEmpty ? Color.secondary : Color.red)
+                    .lineLimit(4)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(model.nodes) { node in
+                            if node.id > 0 { hairline() }
+                            NodeRowView(node: node, enabled: model.nodeSwitchOn) {
+                                model.send("use " + node.name)
+                            }
+                        }
+                    }
+                }
+                .frame(height: min(CGFloat(model.nodes.count) * 38, 228))
+            }
+        }
     }
 
     private var delayButtons: some View {
@@ -494,6 +549,37 @@ extension PanelRoot {
         .contentShape(Rectangle())
         .onTapGesture { if model.installOn { model.send("install") } }
         .opacity(model.installOn ? 1 : 0.45)
+    }
+}
+
+private struct NodeRowView: View {
+    var node: NodeRow
+    var enabled: Bool
+    var action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: node.selected ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 13))
+                .foregroundStyle(node.selected ? Color.accentColor : Color.secondary)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(node.name)
+                    .font(.system(size: 13, weight: node.selected ? .semibold : .regular))
+                    .lineLimit(1)
+                Text(node.detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 38)
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture { if enabled && !node.selected { action() } }
+        .opacity(enabled || node.selected ? 1 : 0.45)
     }
 }
 

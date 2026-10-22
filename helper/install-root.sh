@@ -50,6 +50,9 @@ for f in supervise.sh enable.sh disable.sh firewall-on.sh firewall-off.sh panic-
 done
 install -m 644 "$SRC/common.sh" "$HELPER/common.sh"
 install -m 644 "$SRC/render.py" "$HELPER/render.py"
+install -m 644 "$SRC/nodes.py" "$HELPER/nodes.py"
+# The CLI runs as the user; root-owned here so nothing else can swap it. Not in sudoers.
+install -m 755 "$SRC/tun4ai" "$HELPER/tun4ai"
 install -m 755 "$SING_BOX" "$HELPER/bin/sing-box"
 printf 'OWNER=%q\nCONFIG_DIR=%q\nSTATE_DIR=%q\nUI_LANG=%q\n' "$OWNER" "$CONFIG_DIR" "$STATE" "$UI_LANG" >"$HELPER/env"
 chmod 644 "$HELPER/env"

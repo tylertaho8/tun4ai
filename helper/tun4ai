@@ -1,0 +1,561 @@
+#!/usr/bin/python3
+"""tun4ai command line. Every command takes --json and then prints exactly one JSON object.
+
+Runs as you, never as root. It edits only the files in your config folder; starting,
+stopping and the firewall go through the same four sudoers-approved scripts the tray uses.
+"""
+
+import argparse
+import ipaddress
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import nodes  # noqa: E402
+import render  # noqa: E402
+
+SCHEMA = 1
+t = nodes.t
+CONFIG_DIR = Path(os.environ.get("TUN4AI_CONFIG_DIR") or Path.home() / "Library/Application Support/tun4ai")
+STATE_DIR = Path(os.environ.get("TUN4AI_STATE_DIR") or "/Library/Application Support/tun4ai")
+HELPER_DIR = Path(os.environ.get("TUN4AI_HELPER_DIR") or "/Library/PrivilegedHelperTools/tun4ai")
+ACTIONS = ("enable", "disable", "firewall-on", "firewall-off")
+NODES_HEADER = (
+    "# tun4ai nodes: one share link per line. \"#\" starts a comment.\n"
+    "# 节点：一行一个分享链接，# 开头是注释。\n"
+)
+
+
+class Failure(Exception):
+    def __init__(self, code, message, exit_code=1):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.exit_code = exit_code
+
+
+# ---------- user files ----------
+
+def read_user(path):
+    """Same checks as the root helper (no symlinks, owner, 64 KB), so what passes here passes there."""
+    try:
+        return render.read_user_file(path, os.getuid())
+    except SystemExit as err:
+        raise Failure("config_unreadable", str(err.code)) from None
+
+
+def write_user(path, text, mode):
+    data = text.encode("utf-8")
+    if len(data) > render.MAX_USER_FILE:
+        raise Failure("file_too_large", t(f"{path.name} 会超过 64 KB", f"{path.name} would exceed 64 KB"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def nodes_path():
+    return render.node_file(CONFIG_DIR)
+
+
+def migrate():
+    """The one migration rule: the first edit renames vless.txt to nodes.txt. Same format, nothing rewritten."""
+    primary = CONFIG_DIR / render.NODES_FILE
+    legacy = CONFIG_DIR / render.LEGACY_NODES_FILE
+    if not os.path.lexists(primary) and os.path.lexists(legacy):
+        read_user(legacy)
+        os.rename(legacy, primary)
+        return render.LEGACY_NODES_FILE
+    return None
+
+
+def load_nodes():
+    path = nodes_path()
+    text = read_user(path)
+    try:
+        return path, text, nodes.parse_nodes(text or "", path.name)
+    except nodes.LinkError as err:
+        raise Failure("invalid_node_file", str(err)) from None
+
+
+def selected_name():
+    return (read_user(CONFIG_DIR / render.SELECTED_FILE) or "").strip()
+
+
+def effective(found):
+    """(node or None, error message or None). Mirrors what render.py will pick."""
+    if not found:
+        return None, t("没有节点", "there are no nodes")
+    try:
+        return nodes.selected(found, selected_name()), None
+    except nodes.LinkError as err:
+        return None, str(err)
+
+
+def require(found, ref):
+    item = nodes.find(found, ref)
+    if item is None:
+        raise Failure("not_found", t(f"没有叫 “{ref}” 的节点，也不是有效序号", f"no node named \"{ref}\" and not a valid index"))
+    return item
+
+
+def listing(found):
+    chosen, _ = effective(found)
+    return [nodes.public(item, chosen is not None and item["name"] == chosen["name"]) for item in found]
+
+
+# ---------- root state (read only) ----------
+
+def read_state(name):
+    try:
+        return (STATE_DIR / name).read_text().strip()
+    except OSError:
+        return None
+
+
+def active_node():
+    text = read_state("active-node.json")
+    try:
+        return json.loads(text) if text else None
+    except ValueError:
+        return None
+
+
+def box_alive():
+    pid = read_state("run/sing-box.pid")
+    if not pid or not pid.isdigit():
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def tun_up():
+    try:
+        return subprocess.run(["/sbin/ifconfig", render.TUN_IF], capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
+def same_node(active, chosen):
+    if not active or not chosen:
+        return None
+    keys = ("name", "protocol", "server", "port", "transport")
+    pub = nodes.public(chosen)
+    return all(active.get(key) == pub.get(key) for key in keys)
+
+
+def status_data():
+    installed = (HELPER_DIR / "bin/sing-box").is_file() and all((HELPER_DIR / f"{a}.sh").is_file() for a in ACTIONS)
+    tunnel_wanted = installed and not (STATE_DIR / "DISABLED").exists()
+    running = (STATE_DIR / "ENABLED").exists() and box_alive()
+    firewall_wanted = installed and not (STATE_DIR / "FIREWALL_OFF").exists()
+    node_error = None
+    chosen = None
+    try:
+        _, _, found = load_nodes()
+        chosen, node_error = effective(found)
+    except Failure as err:
+        node_error = err.message
+    active = active_node() if running else None
+    match = same_node(active, chosen)
+    return {
+        "installed": installed,
+        "config_dir": str(CONFIG_DIR),
+        "nodes_file": nodes_path().name,
+        "tunnel": {"wanted": tunnel_wanted, "running": running, "interface": render.TUN_IF,
+                   "interface_up": tun_up() if running else False},
+        "firewall": {"wanted": firewall_wanted,
+                     "blocks_internet_without_tunnel": firewall_wanted and not running},
+        "selected": nodes.public(chosen, True) if chosen else None,
+        "selected_error": node_error,
+        "active": active,
+        "restart_needed": running and match is False,
+        "last_result": read_state("run/last-result.txt") or None,
+    }
+
+
+# ---------- privileged actions ----------
+
+def run_action(action):
+    script = HELPER_DIR / f"{action}.sh"
+    if not script.is_file():
+        raise Failure("not_installed", t("后台服务没有安装", "the background service is not installed"))
+    run = subprocess.run(["/usr/bin/sudo", "-n", str(script)], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    err = run.stderr.strip()
+    if "password is required" in err or "not allowed" in err or "not permitted" in err:
+        raise Failure("sudo_refused", t("没有执行权限，请重新安装", "not authorized to run the helper; reinstall tun4ai"))
+    message = (read_state("run/last-result.txt") or run.stdout.strip() or err)
+    if run.returncode != 0 or message.startswith("FAIL"):
+        raise Failure("action_failed", message or t("操作没有完成", "the action did not finish"))
+    return message
+
+
+# ---------- commands ----------
+
+def cmd_node_list(args):
+    path, _, found = load_nodes()
+    chosen, error = effective(found)
+    return {"file": path.name, "nodes": listing(found), "selected": chosen["name"] if chosen else None,
+            "selected_error": error}, None
+
+
+def cmd_node_add(args):
+    try:
+        item = nodes.parse_link(args.link)
+    except nodes.LinkError as err:
+        raise Failure("invalid_link", str(err)) from None
+    link = args.link.strip()
+    if args.name:
+        name = nodes.clean_name(args.name)
+        if not name:
+            raise Failure("invalid_name", t("名字不能为空", "the name is empty"))
+        link = nodes.with_name(link, name)
+        item = nodes.parse_link(link)
+    migrated = migrate()
+    path, text, found = load_nodes()
+    if any(n["name"] == item["name"] for n in found):
+        raise Failure("duplicate_name", t(f"已经有叫 “{item['name']}” 的节点，用 --name 换个名字",
+                                          f"a node named \"{item['name']}\" already exists; pass --name"))
+    text = text if text is not None else NODES_HEADER
+    if text and not text.endswith("\n"):
+        text += "\n"
+    write_user(path if path.name == render.NODES_FILE else CONFIG_DIR / render.NODES_FILE, text + link + "\n", 0o600)
+    _, _, found = load_nodes()
+    added = nodes.find(found, item["name"])
+    return {"added": listing(found)[added["index"] - 1], "migrated_from": migrated,
+            "restart_needed": False}, t(f"已添加 {added['name']}", f"added {added['name']}")
+
+
+def cmd_node_remove(args):
+    migrated = migrate()
+    path, text, found = load_nodes()
+    item = require(found, args.ref)
+    chosen, _ = effective(found)
+    was_selected = chosen is not None and chosen["name"] == item["name"]
+    if was_selected and not args.force:
+        raise Failure("selected_node", t(
+            f"“{item['name']}” 是当前选中的节点。先用 tun4ai node use 换一个，或者加 --force",
+            f"\"{item['name']}\" is the selected node; switch with tun4ai node use first, or pass --force"))
+    lines = text.splitlines(keepends=True)
+    del lines[item["line"] - 1]
+    write_user(path, "".join(lines), 0o600)
+    if was_selected and os.path.lexists(CONFIG_DIR / render.SELECTED_FILE):
+        os.unlink(CONFIG_DIR / render.SELECTED_FILE)
+    _, _, found = load_nodes()
+    chosen, _ = effective(found)
+    return {"removed": item["name"], "selected": chosen["name"] if chosen else None, "migrated_from": migrated,
+            "restart_needed": was_selected and status_data()["tunnel"]["running"]}, \
+        t(f"已删除 {item['name']}", f"removed {item['name']}")
+
+
+def cmd_node_use(args):
+    _, _, found = load_nodes()
+    item = require(found, args.ref)
+    write_user(CONFIG_DIR / render.SELECTED_FILE, item["name"] + "\n", 0o600)
+    state = status_data()
+    return {"selected": nodes.public(item, True), "restart_needed": state["restart_needed"]}, \
+        t(f"已选中 {item['name']}", f"selected {item['name']}") + (
+            t("。运行 tun4ai restart 生效", ". Run tun4ai restart to apply it") if state["restart_needed"] else "")
+
+
+def tcp_connect_ms(host, port, timeout):
+    start = time.monotonic()
+    infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+    with socket.create_connection(infos[0][4], timeout=timeout):
+        return round((time.monotonic() - start) * 1000)
+
+
+def cmd_node_test(args):
+    _, _, found = load_nodes()
+    targets = [require(found, args.ref)] if args.ref else found
+    results = []
+    for item in targets:
+        row = {"index": item["index"], "name": item["name"], "transport": item["transport"],
+               "reachable": None, "tcp_connect_ms": None, "error": None}
+        if item["transport"] != "tcp":
+            row["error"] = "udp_not_testable"
+        else:
+            try:
+                row["tcp_connect_ms"] = tcp_connect_ms(item["host"], item["port"], args.timeout)
+                row["reachable"] = True
+            except OSError as err:
+                row["reachable"] = False
+                row["error"] = type(err).__name__ if not str(err) else str(err)
+        results.append(row)
+    note = t("TCP 连接耗时，不代表代理可用。隧道和防火墙开着时，非当前节点要经过当前节点或被拦截。",
+             "TCP connect time only, not proof the proxy works. With the tunnel and firewall up, other nodes are "
+             "reached through the current one or blocked.")
+    return {"method": "tcp_connect", "note": note, "results": results}, None
+
+
+def direct_entries(text):
+    out = []
+    for lineno, raw in enumerate((text or "").splitlines(), 1):
+        code = raw.split("#", 1)[0].strip()
+        if code:
+            out.append((lineno, normalize_direct(code)))
+    return out
+
+
+def normalize_direct(entry):
+    try:
+        nets, domains = render.parse_direct(entry)
+    except SystemExit as err:
+        raise Failure("invalid_entry", str(err.code)) from None
+    return str(nets[0]) if nets else domains[0]
+
+
+def cmd_direct_list(args):
+    text = read_user(CONFIG_DIR / "direct.txt")
+    try:
+        render.parse_direct(text)
+    except SystemExit as err:
+        raise Failure("invalid_entry", str(err.code)) from None
+    return {"entries": [entry for _, entry in direct_entries(text)]}, None
+
+
+def cmd_direct_add(args):
+    entry = normalize_direct(args.entry.strip())
+    path = CONFIG_DIR / "direct.txt"
+    text = read_user(path) or ""
+    if entry in [e for _, e in direct_entries(text)]:
+        return {"entry": entry, "changed": False, "restart_needed": False}, t(f"{entry} 已在直连名单里", f"{entry} is already direct")
+    if text and not text.endswith("\n"):
+        text += "\n"
+    write_user(path, text + entry + "\n", 0o644)
+    return {"entry": entry, "changed": True, "restart_needed": status_data()["tunnel"]["running"]}, \
+        t(f"已加入直连：{entry}", f"added to the direct list: {entry}")
+
+
+def cmd_direct_remove(args):
+    entry = normalize_direct(args.entry.strip())
+    path = CONFIG_DIR / "direct.txt"
+    text = read_user(path) or ""
+    drop = {lineno for lineno, e in direct_entries(text) if e == entry}
+    if not drop:
+        raise Failure("not_found", t(f"直连名单里没有 {entry}", f"{entry} is not in the direct list"))
+    lines = [line for no, line in enumerate(text.splitlines(keepends=True), 1) if no not in drop]
+    write_user(path, "".join(lines), 0o644)
+    return {"entry": entry, "changed": True, "restart_needed": status_data()["tunnel"]["running"]}, \
+        t(f"已移出直连：{entry}", f"removed from the direct list: {entry}")
+
+
+def cmd_status(args):
+    return status_data(), None
+
+
+def check(checks, ident, status, message):
+    checks.append({"id": ident, "status": status, "message": message})
+
+
+def cmd_doctor(args):
+    checks = []
+    state = status_data()
+    legacy = CONFIG_DIR / render.LEGACY_NODES_FILE
+    if not CONFIG_DIR.is_dir():
+        check(checks, "config_dir", "fail", t(f"没有配置目录 {CONFIG_DIR}", f"config folder {CONFIG_DIR} is missing"))
+    else:
+        check(checks, "config_dir", "ok", str(CONFIG_DIR))
+    try:
+        path, _, found = load_nodes()
+        if not found:
+            check(checks, "nodes", "fail", t(f"{path.name} 里没有节点", f"{path.name} has no nodes"))
+        else:
+            check(checks, "nodes", "ok", t(f"{path.name}：{len(found)} 个节点", f"{path.name}: {len(found)} node(s)"))
+        chosen, error = effective(found)
+        check(checks, "selected", "ok" if chosen else "fail", chosen["name"] if chosen else error)
+        if chosen and chosen["insecure"]:
+            check(checks, "certificate", "warn", t("选中的节点跳过了证书校验（insecure）", "the selected node skips certificate checks (insecure)"))
+    except Failure as err:
+        check(checks, "nodes", "fail", err.message)
+    if path_is_nodes() and os.path.lexists(legacy):
+        check(checks, "legacy_vless_txt", "warn", t("nodes.txt 已存在，vless.txt 不再被读取，可以删掉",
+                                                    "nodes.txt exists, so vless.txt is ignored; it can be deleted"))
+    try:
+        cmd_direct_list(args)
+        check(checks, "direct", "ok", "direct.txt")
+    except Failure as err:
+        check(checks, "direct", "fail", err.message)
+    if not state["installed"]:
+        check(checks, "installed", "fail", t("后台服务没有安装", "the background service is not installed"))
+    else:
+        check(checks, "installed", "ok", str(HELPER_DIR))
+        check(checks, "sudoers", *sudo_check())
+        tunnel = state["tunnel"]
+        if tunnel["wanted"] and not tunnel["running"]:
+            check(checks, "tunnel", "fail", state["last_result"] or t("隧道应该开着，但没有运行", "the tunnel should be up but is not running"))
+        elif tunnel["running"] and not tunnel["interface_up"]:
+            check(checks, "tunnel", "fail", t(f"sing-box 在运行，但没有 {render.TUN_IF}", f"sing-box runs but {render.TUN_IF} is missing"))
+        else:
+            check(checks, "tunnel", "ok", t("运行中", "running") if tunnel["running"] else t("已关闭", "off"))
+        if tunnel["running"] and not state["firewall"]["wanted"]:
+            check(checks, "firewall", "warn", t("防火墙关着：隧道一断就会漏网", "the firewall is off: a tunnel drop would leak"))
+        else:
+            check(checks, "firewall", "ok", t("开", "on") if state["firewall"]["wanted"] else t("关", "off"))
+        if state["restart_needed"]:
+            check(checks, "restart_needed", "warn", t("隧道还在用旧节点，运行 tun4ai restart", "the tunnel still uses the previous node; run tun4ai restart"))
+    healthy = all(c["status"] != "fail" for c in checks)
+    return {"healthy": healthy, "checks": checks}, None
+
+
+def path_is_nodes():
+    return nodes_path().name == render.NODES_FILE
+
+
+def sudo_check():
+    script = str(HELPER_DIR / "enable.sh")
+    try:
+        run = subprocess.run(["/usr/bin/sudo", "-n", "-l", script], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    except OSError as err:
+        return "warn", str(err)
+    if run.returncode == 0:
+        return "ok", t("免密执行已授权", "passwordless helper access is granted")
+    return "warn", t("无法确认 sudo 授权（需要密码才能查询，或授权缺失）",
+                     "could not confirm sudo access (listing needs a password, or the rule is missing)")
+
+
+def simple_action(action, ok_zh, ok_en):
+    def run(args):
+        message = run_action(action)
+        return {"result": message, "status": status_data()}, message or t(ok_zh, ok_en)
+    return run
+
+
+def cmd_restart(args):
+    run_action("disable")
+    message = run_action("enable")
+    return {"result": message, "status": status_data()}, message
+
+
+def cmd_firewall(args):
+    message = run_action("firewall-on" if args.state == "on" else "firewall-off")
+    return {"result": message, "status": status_data()}, message
+
+
+# ---------- output ----------
+
+def human(command, data, message):
+    if message:
+        return message
+    if command == "node list":
+        if not data["nodes"]:
+            return t("没有节点。用 tun4ai node add '<分享链接>' 添加", "No nodes. Add one with tun4ai node add '<share link>'")
+        rows = [f"{'*' if n['selected'] else ' '} {n['index']:>2}  {n['name']}  {n['protocol']}  {n['server']}:{n['port']}/{n['transport']}"
+                for n in data["nodes"]]
+        if data["selected_error"]:
+            rows.append(data["selected_error"])
+        return "\n".join(rows)
+    if command == "node test":
+        rows = []
+        for r in data["results"]:
+            value = f"{r['tcp_connect_ms']} ms" if r["reachable"] else (r["error"] or "-")
+            rows.append(f"{r['index']:>2}  {r['name']}  {value}")
+        return "\n".join(rows + [data["note"]])
+    if command == "direct list":
+        return "\n".join(data["entries"]) or t("直连名单是空的", "The direct list is empty")
+    if command == "doctor":
+        marks = {"ok": "ok  ", "warn": "warn", "fail": "FAIL", "skip": "skip"}
+        return "\n".join(f"{marks[c['status']]} {c['id']}: {c['message']}" for c in data["checks"])
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        raise Failure("usage", f"{self.prog}: {message}", 2)
+
+
+def build_parser():
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="print one JSON object")
+    parser = Parser(prog="tun4ai", description="tun4ai: nodes, direct list and tunnel control.", parents=[common])
+    sub = parser.add_subparsers(dest="group", parser_class=Parser)
+    sub.required = True
+
+    node = sub.add_parser("node", help="list, add, remove, select and test nodes", parents=[common])
+    nsub = node.add_subparsers(dest="action", parser_class=Parser)
+    nsub.required = True
+    nsub.add_parser("list", parents=[common]).set_defaults(run=cmd_node_list)
+    add = nsub.add_parser("add", parents=[common], help="add one share link")
+    add.add_argument("link")
+    add.add_argument("--name")
+    add.set_defaults(run=cmd_node_add)
+    remove = nsub.add_parser("remove", parents=[common])
+    remove.add_argument("ref", help="name or 1-based index")
+    remove.add_argument("--force", action="store_true", help="also remove the selected node")
+    remove.set_defaults(run=cmd_node_remove)
+    use = nsub.add_parser("use", parents=[common])
+    use.add_argument("ref", help="name or 1-based index")
+    use.set_defaults(run=cmd_node_use)
+    test = nsub.add_parser("test", parents=[common])
+    test.add_argument("ref", nargs="?")
+    test.add_argument("--timeout", type=float, default=3.0)
+    test.set_defaults(run=cmd_node_test)
+
+    direct = sub.add_parser("direct", help="the list of addresses that bypass the tunnel", parents=[common])
+    dsub = direct.add_subparsers(dest="action", parser_class=Parser)
+    dsub.required = True
+    dsub.add_parser("list", parents=[common]).set_defaults(run=cmd_direct_list)
+    dadd = dsub.add_parser("add", parents=[common])
+    dadd.add_argument("entry", help="IP, CIDR or domain")
+    dadd.set_defaults(run=cmd_direct_add)
+    dremove = dsub.add_parser("remove", parents=[common])
+    dremove.add_argument("entry")
+    dremove.set_defaults(run=cmd_direct_remove)
+
+    sub.add_parser("status", parents=[common]).set_defaults(run=cmd_status)
+    sub.add_parser("doctor", parents=[common]).set_defaults(run=cmd_doctor)
+    sub.add_parser("start", parents=[common]).set_defaults(run=simple_action("enable", "已开启", "started"))
+    sub.add_parser("stop", parents=[common]).set_defaults(run=simple_action("disable", "已关闭", "stopped"))
+    sub.add_parser("restart", parents=[common]).set_defaults(run=cmd_restart)
+    fw = sub.add_parser("firewall", parents=[common])
+    fw.add_argument("state", choices=["on", "off"])
+    fw.set_defaults(run=cmd_firewall)
+    return parser
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    as_json = "--json" in argv
+    command = " ".join(a for a in argv[:2] if not a.startswith("-"))
+    try:
+        if os.geteuid() == 0:
+            raise Failure("root", t("不要用 sudo 运行 tun4ai", "do not run tun4ai with sudo"))
+        args = build_parser().parse_args(argv)
+        command = args.group + (f" {args.action}" if getattr(args, "action", None) else "")
+        data, message = args.run(args)
+        ok = data.get("healthy", True)
+        if as_json:
+            print(json.dumps({"ok": ok, "schema": SCHEMA, "command": command, **data}, ensure_ascii=False))
+        else:
+            print(human(command, data, message))
+        return 0 if ok else 1
+    except Failure as err:
+        if as_json:
+            print(json.dumps({"ok": False, "schema": SCHEMA, "command": command,
+                              "error": {"code": err.code, "message": err.message}}, ensure_ascii=False))
+        else:
+            print(f"tun4ai: {err.message}", file=sys.stderr)
+        return err.exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

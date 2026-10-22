@@ -12,7 +12,8 @@ Please report vulnerabilities privately through [GitHub Security Advisories](htt
 - The root helper reading, following or executing user-controlled paths.
 - The first-run installer, which runs once from the app bundle with your password, installing anything other than the bundled helper and the checksum-verified sing-box.
 - Traffic or DNS leaving outside the tunnel while the firewall is on.
-- The node UUID ending up somewhere readable by other users.
+- Node credentials (UUIDs, passwords, obfuscation keys) ending up somewhere readable by other users, including the `tun4ai` CLI output.
+- The `tun4ai` CLI writing outside your config folder, or reaching root other than through the four sudoers-approved scripts.
 
 ## Out of scope
 
