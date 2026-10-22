@@ -339,6 +339,9 @@ class EndToEnd(Workdir):
         self.assertEqual(pf.verdict(proto="tcp", dst="203.0.113.7", dport=443), "block")  # the reality node
         active = json.loads((state_dir / "active-node.json").read_text())
         self.assertEqual((active["name"], active["server_ips"], active["transport"]), ("hy2", ["203.0.113.60"], "udp"))
+        # tray/src/nodes.rs reads these keys.
+        self.assertLessEqual({"name", "protocol", "server", "server_name", "port", "transport"}, set(active))
+        self.assertEqual(active["server_name"], "hy.example.com")
         public = "".join((state_dir / n).read_text() for n in ("pf.killswitch.conf", "pf.dns.conf", "active-node.json"))
         for item in nodes.parse_nodes(text, "nodes.txt"):
             for secret in item["secrets"]:

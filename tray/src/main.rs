@@ -13,6 +13,7 @@ use tray_icon::menu::NativeIcon;
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 mod leak;
+mod nodes;
 mod panel;
 mod setup;
 
@@ -199,11 +200,101 @@ fn handle_panel(action: panel::Action) {
         }
         panel::Action::Restart => start_action("restart"),
         panel::Action::Firewall(on) => start_action(if on { "firewall-on" } else { "firewall-off" }),
-        panel::Action::EditNode => open_config("vless.txt"),
+        panel::Action::EditNode => open_config(node_file_name()),
+        panel::Action::UseNode(name) => start_use(name),
         panel::Action::EditDirect => open_config("direct.txt"),
         panel::Action::Install => start_setup(),
         panel::Action::Quit => std::process::exit(0),
     }
+}
+
+// Same rule as render.py: nodes.txt, or an old vless.txt while there is no nodes.txt.
+fn node_file_name() -> &'static str {
+    if config_dir().join("vless.txt").is_file() && fs::symlink_metadata(config_dir().join("nodes.txt")).is_err() {
+        "vless.txt"
+    } else {
+        "nodes.txt"
+    }
+}
+
+fn cli() -> String {
+    format!("{HELPER}/tun4ai")
+}
+
+struct NodeCache {
+    stamp: Option<String>,
+    loading: bool,
+    rows: Vec<nodes::Row>,
+    error: Option<String>,
+    switching: bool,
+}
+
+static NODES: Mutex<NodeCache> = Mutex::new(NodeCache { stamp: None, loading: false, rows: Vec::new(), error: None, switching: false });
+
+// Changes whenever a file the list depends on changes, so the CLI only runs then.
+fn node_stamp() -> String {
+    ["nodes.txt", "vless.txt", "selected.txt"]
+        .iter()
+        .map(|name| {
+            let meta = fs::symlink_metadata(config_dir().join(name)).ok();
+            let modified = meta.as_ref().and_then(|m| m.modified().ok());
+            format!("{name}:{:?}:{:?}", modified, meta.map(|m| m.len()))
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+// Rows for the panel. The CLI runs on a worker thread; until it answers the last list stays up.
+fn node_rows() -> (Vec<nodes::Row>, Option<String>, bool) {
+    let stamp = node_stamp();
+    // Never held across the CLI call, so this does not stall the event loop.
+    let mut cache = NODES.lock().unwrap();
+    if cache.stamp.as_deref() != Some(stamp.as_str()) && !cache.loading && Path::new(&cli()).is_file() {
+        cache.loading = true;
+        cache.stamp = Some(stamp);
+        thread::spawn(|| {
+            let (_, out, err) = run(&[&cli(), "node", "list", "--json"]);
+            let parsed = nodes::rows_from(&out).map_err(|e| if out.trim().is_empty() { err.trim().to_string() } else { e });
+            let mut cache = NODES.lock().unwrap();
+            match parsed {
+                Ok(rows) => {
+                    cache.rows = rows;
+                    cache.error = None;
+                }
+                Err(message) => {
+                    cache.rows.clear();
+                    cache.error = Some(message);
+                }
+            }
+            cache.loading = false;
+        });
+    }
+    (cache.rows.clone(), cache.error.clone(), !cache.switching)
+}
+
+// Select through the CLI, then reconnect only if the running tunnel was built from another node.
+fn start_use(name: String) {
+    {
+        let mut cache = NODES.lock().unwrap();
+        if cache.switching {
+            return;
+        }
+        cache.switching = true;
+    }
+    thread::spawn(move || {
+        let (_, out, err) = run(&[&cli(), "node", "use", "--json", "--", &name]);
+        let result = nodes::use_result(&out).map_err(|e| if out.trim().is_empty() { err.trim().to_string() } else { e });
+        {
+            let mut cache = NODES.lock().unwrap();
+            cache.switching = false;
+            cache.stamp = None;
+        }
+        match result {
+            Ok(true) => start_action("restart"),
+            Ok(false) => {}
+            Err(message) => *PENDING.lock().unwrap() = Some(message),
+        }
+    });
 }
 
 // install.sh creates both files. If one is gone, show the folder instead of failing silently.
@@ -606,15 +697,6 @@ mod tests {
     }
 
     #[test]
-    fn node_sni_and_port_come_from_vless_txt() {
-        let text = "# comment\n\nvless://uuid@203.0.113.7:443?pbk=k&sid=ab&sni=Node.Example.com\n";
-        assert_eq!(node_from(text), Some(("node.example.com".to_string(), 443)));
-        assert_eq!(node_from("vless://uuid@hk.example.com:8443"), Some(("hk.example.com".to_string(), 8443)));
-        assert_eq!(node_from("# only comments\n"), None);
-        assert_eq!(node_from("https://u:p@hk.example.com"), None);
-    }
-
-    #[test]
     fn ping_summary_is_parsed() {
         let out = "--- 1.2.3.4 ping statistics ---\n4 packets transmitted, 3 packets received, 25.0% packet loss\nround-trip min/avg/max/stddev = 30.1/31.6/33.0/1.0 ms\n";
         assert_eq!(parse_ping(out, true), Some("32 ms，丢包 25.0%".to_string()));
@@ -684,6 +766,7 @@ fn panel_model(
         tr("安装（下载 sing-box，需要管理员密码）", "Install (downloads sing-box, needs your password)")
     };
     let tunnel_on = enabled && alive;
+    let (node_rows, node_error, can_switch) = node_rows();
     panel::Model {
         status: panel_headline(title),
         subtitle: panel_subtitle(title, tunnel_on, firewall_off),
@@ -706,6 +789,12 @@ fn panel_model(
         install: install.to_string(),
         install_enabled: !setup_busy,
         install_visible: true,
+        nodes: node_rows
+            .iter()
+            .map(|row| panel::NodeLine { name: row.name.clone(), detail: row.detail(), selected: row.selected })
+            .collect(),
+        node_error: node_error.unwrap_or_default(),
+        node_switch_enabled: can_switch && !busy && installed,
     }
 }
 
@@ -746,7 +835,8 @@ fn panel_subtitle(status: &str, tunnel_on: bool, firewall_off: bool) -> String {
         return tr("防火墙已关闭，断开后会漏网", "Firewall is off, a drop would leak").into();
     }
     if tunnel_on {
-        return format!("VLESS · {}", protected_for());
+        let label = active_node().map(|node| nodes::label(&node.protocol)).unwrap_or("Proxy");
+        return format!("{label} · {}", protected_for());
     }
     if let Some((_, rest)) = status.split_once('·') {
         return rest.trim().to_string();
@@ -972,9 +1062,10 @@ fn start_probe(speed: bool) {
                 p.icmp = icmp;
                 p.tcp = testing.into();
             });
-            let tcp = match (&ip, node_server()) {
-                (Some(ip), Some(node)) => tls_delay(ip, &node),
-                (_, None) => tr("没有配置节点", "no node configured").into(),
+            let tcp = match (&ip, active_node()) {
+                (_, Some(node)) if node.transport == "udp" => tr("QUIC 节点不适用", "n/a for QUIC nodes").into(),
+                (Some(ip), Some(node)) => tls_delay(ip, &(node.tls_host(), node.port)),
+                (_, None) => tr("先连接一次隧道", "connect the tunnel first").into(),
                 (None, _) => no_server.into(),
             };
             set_probe(|p| p.tcp = tcp);
@@ -1002,29 +1093,9 @@ fn start_probe(speed: bool) {
     });
 }
 
-fn node_server() -> Option<(String, u16)> {
-    node_from(&fs::read_to_string(config_dir().join("vless.txt")).ok()?)
-}
-
-// SNI and port for the TLS probe. The UUID and keys are never read here.
-fn node_from(text: &str) -> Option<(String, u16)> {
-    let line = text
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty() && !l.starts_with('#'))?;
-    let rest = line.strip_prefix("vless://")?;
-    let (authority, query) = rest.split_once('?').unwrap_or((rest, ""));
-    let host_port = authority.rsplit('@').next()?;
-    let (host, port) = match host_port.rsplit_once(':') {
-        Some((host, port)) => (host, port.parse().ok()?),
-        None => (host_port, 443),
-    };
-    let sni = query
-        .split('&')
-        .find_map(|part| part.strip_prefix("sni="))
-        .filter(|s| !s.is_empty())
-        .unwrap_or(host);
-    (!sni.is_empty()).then(|| (sni.to_lowercase(), port))
+// The node the tunnel was last built from. No credentials in this file.
+fn active_node() -> Option<nodes::Active> {
+    nodes::active_from(&fs::read_to_string(state("active-node.json")).ok()?)
 }
 
 fn proxy_ip() -> Option<String> {
