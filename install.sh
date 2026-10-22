@@ -39,7 +39,7 @@ mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
 # An existing vless.txt is the node list until the first `tun4ai node` edit renames it to nodes.txt.
 # A template nodes.txt next to it would hide it, so only a brand-new folder gets one.
-if [ ! -e "$CONFIG_DIR/nodes.txt" ] && [ ! -e "$CONFIG_DIR/vless.txt" ]; then
+if [ ! -e "$CONFIG_DIR/nodes.txt" ] && [ ! -L "$CONFIG_DIR/nodes.txt" ] && [ ! -e "$CONFIG_DIR/vless.txt" ]; then
   install -m 600 "$ROOT/examples/nodes.txt" "$CONFIG_DIR/nodes.txt"
 fi
 if [ ! -f "$CONFIG_DIR/direct.txt" ]; then
