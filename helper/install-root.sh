@@ -53,6 +53,11 @@ install -m 644 "$SRC/render.py" "$HELPER/render.py"
 install -m 755 "$SING_BOX" "$HELPER/bin/sing-box"
 printf 'OWNER=%q\nCONFIG_DIR=%q\nSTATE_DIR=%q\nUI_LANG=%q\n' "$OWNER" "$CONFIG_DIR" "$STATE" "$UI_LANG" >"$HELPER/env"
 chmod 644 "$HELPER/env"
+if [ -z "$DESTDIR" ]; then
+  # shellcheck disable=SC1091
+  . "$HELPER/common.sh"
+  ensure_direct_group
+fi
 # A fresh install touches nothing: tunnel off, firewall off. The user turns them on from the tray.
 if [ "$fresh" -eq 1 ]; then
   touch "$STATE/DISABLED" "$STATE/FIREWALL_OFF"

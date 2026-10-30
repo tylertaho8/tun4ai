@@ -131,6 +131,21 @@ class DnsRedirect(unittest.TestCase):
 
 
 class VlessOutbound(unittest.TestCase):
+    def test_domain_direct_is_limited_to_the_tun4ai_group(self):
+        text = render.pf_text("en0", DIRECT, LAN, PROXY, 443, root_direct=True, direct_gid=59999)
+        rule = "pass out quick on $ext_if inet proto tcp user 0 group 59999 flags any keep state"
+        self.assertIn(rule, lines(text))
+        self.assertLess(text.index("to any port { 3478, 5349, 19302 }"), text.index(rule))
+        self.assertLess(text.index(rule), text.index("block drop out quick all"))
+        self.assertNotIn("proto udp", rule)
+        closed = render.pf_text("en0", DIRECT, LAN, PROXY, 443, root_direct=True)
+        self.assertNotIn("user 0", closed)
+        self.assertNotIn("group ", render.pf_text("en0", DIRECT, LAN, PROXY, 443))
+        run = pfctl_check(text)
+        if run.returncode != 0 and "password" in run.stderr:
+            self.skipTest("pfctl needs root here")
+        self.assertEqual(run.returncode, 0, run.stderr)
+
     def test_firewall_allows_only_tcp_to_the_server(self):
         text = render.pf_text("en0", DIRECT, LAN, PROXY, 443)
         self.assertIn("proto tcp to <proxy4> port 443", text)

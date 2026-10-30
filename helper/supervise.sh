@@ -126,6 +126,10 @@ start_box() {
     START_ERROR="$(t "没有默认网络" "no default network")"
     return 1
   fi
+  if ! ensure_direct_group; then
+    START_ERROR="$(t "建不了用户组 $DIRECT_GROUP" "could not create group $DIRECT_GROUP")"
+    return 1
+  fi
   if ! out="$(render_config "$iface" 2>&1)"; then
     START_ERROR="$(printf '%s\n' "$out" | tail -1)"
     return 1
@@ -134,6 +138,7 @@ start_box() {
   ensure_firewall
   # Own session, so restarting this supervisor does not kill the tunnel.
   if ! "$PYTHON" - "$BOX" "$CONFIG_JSON" "$RUN/sing-box.log" "$RUN/sing-box.pid" <<'PY'
+import grp
 import os
 import select
 import sys
@@ -147,6 +152,11 @@ if os.fork():
     os._exit(0 if got == b"1" else 1)
 os.setsid()
 os.close(read_fd)
+# Effective group is fixed before any socket exists. pf stores that group
+# on the socket. uid stays 0 so the utun can still be created.
+gid = grp.getgrnam("_tun4ai").gr_gid
+os.setgroups([gid])
+os.setgid(gid)
 with open(pidfile, "w") as handle:
     handle.write(f"{os.getpid()}\n")
 os.chmod(pidfile, 0o644)

@@ -28,6 +28,9 @@ PF_DNS_CONF="$STATE_DIR/pf.dns.conf"
 ENABLED="$STATE_DIR/ENABLED"
 DISABLED="$STATE_DIR/DISABLED"
 FIREWALL_OFF="$STATE_DIR/FIREWALL_OFF"
+# Must match DIRECT_GROUP in render.py. sing-box adopts this group before it
+# opens sockets. The kill switch allows direct-domain TCP only from this group.
+DIRECT_GROUP=_tun4ai
 
 # t "中文" "English"
 t() {
@@ -39,6 +42,14 @@ require_root() {
     { t "需要管理员权限" "Must run as root"; echo; } >&2
     exit 1
   fi
+}
+
+# Empty group: no members. Only the supervisor setgid's sing-box into it.
+ensure_direct_group() {
+  if dscl . -read "/Groups/$DIRECT_GROUP" PrimaryGroupID >/dev/null 2>&1; then
+    return 0
+  fi
+  dseditgroup -q -o create -r "tun4ai" "$DIRECT_GROUP"
 }
 
 # The one line the tray shows after an action.
